@@ -208,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
         rows: 3,
         out: "data".into(),
         jobs: 16,
+        tile_url_template: None,
     })
     .await?;
 
