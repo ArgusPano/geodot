@@ -13,6 +13,7 @@ const USER_AGENTS = [
 
 const SUBDOMAINS = ["mt0", "mt1", "mt2", "mt3"];
 const TILE_URL_TEMPLATE_ENV = "GEODOT_TILE_URL_TEMPLATE";
+const MAX_ZOOM = 30;
 
 export function latlonToTile(lat, lon, z) {
   const n = 2 ** z;
@@ -136,6 +137,7 @@ export async function download(options = {}) {
   if (config.geojson && !config.polygon) {
     config.polygon = await loadGeoJSONPolygon(config.geojson);
   }
+  validateOptions(config);
   const center = latlonToTile(config.lat, config.lon, config.zoom);
   const queue = tilesForOptions(config);
   const tiles = [];
@@ -236,6 +238,37 @@ function tilesInRange(minX, maxX, minY, maxY, z) {
       z,
     })),
   ).flat();
+}
+
+function validateOptions(options) {
+  validateFiniteNumber("lat", options.lat);
+  validateFiniteNumber("lon", options.lon);
+  if (options.bottomRightLat !== undefined) {
+    validateFiniteNumber("bottomRightLat", options.bottomRightLat);
+  }
+  if (options.bottomRightLon !== undefined) {
+    validateFiniteNumber("bottomRightLon", options.bottomRightLon);
+  }
+  for (const [index, point] of (options.polygon ?? []).entries()) {
+    validateFiniteNumber(`polygon[${index}].lon`, point.lon);
+    validateFiniteNumber(`polygon[${index}].lat`, point.lat);
+  }
+  validateIntegerRange("zoom", options.zoom, 0, MAX_ZOOM);
+  validateIntegerRange("cols", options.cols, 1, Number.MAX_SAFE_INTEGER);
+  validateIntegerRange("rows", options.rows, 1, Number.MAX_SAFE_INTEGER);
+  validateIntegerRange("jobs", options.jobs, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function validateFiniteNumber(name, value) {
+  if (!Number.isFinite(value)) {
+    throw new TypeError(`${name} must be a finite number`);
+  }
+}
+
+function validateIntegerRange(name, value, min, max) {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new TypeError(`${name} must be an integer from ${min} to ${max}`);
+  }
 }
 
 function tileIntersectsPolygon(tile, points) {

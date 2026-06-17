@@ -121,3 +121,25 @@ test("download manifest includes per-tile bounds", async () => {
     await rm(out, { recursive: true, force: true });
   }
 });
+
+test("download rejects invalid jobs", async () => {
+  await assert.rejects(() => download({ jobs: Number.NaN }), {
+    name: "TypeError",
+    message: "jobs must be an integer from 1 to 9007199254740991",
+  });
+});
+
+test("download rejects invalid numeric options", async () => {
+  await assert.rejects(() => download({ lat: Number.NaN }), {
+    name: "TypeError",
+    message: "lat must be a finite number",
+  });
+  await assert.rejects(() => download({ cols: 0 }), {
+    name: "TypeError",
+    message: "cols must be an integer from 1 to 9007199254740991",
+  });
+  await assert.rejects(() => download({ zoom: 31 }), {
+    name: "TypeError",
+    message: "zoom must be an integer from 0 to 30",
+  });
+});

@@ -1,6 +1,6 @@
 {
   "name": "@geodot/cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Download satellite map tiles from the command line",
   "type": "module",
   "license": "MIT OR Apache-2.0",
@@ -15,7 +15,7 @@
     "bin"
   ],
   "dependencies": {
-    "@geodot/lib": "^0.1.2"
+    "@geodot/lib": "^0.1.3"
   },
   "engines": {
     "node": ">=18"

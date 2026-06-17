@@ -160,3 +160,45 @@ test("CLI download writes tiles and manifest", async () => {
   });
   await rm(out, { recursive: true, force: true });
 });
+
+test("CLI rejects non-numeric jobs", async () => {
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      "js/packages/cli/bin/geodot.js",
+      "-j",
+      "https://example.com/area.geojson",
+    ]),
+    (error) => {
+      assert.match(error.stderr, /-j requires a number/);
+      assert.match(error.stdout, /Usage: geodot/);
+      return true;
+    },
+  );
+});
+
+test("CLI rejects invalid numeric options", async () => {
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      "js/packages/cli/bin/geodot.js",
+      "-z",
+      "1.5",
+    ]),
+    (error) => {
+      assert.match(error.stderr, /-z requires an integer/);
+      assert.match(error.stdout, /Usage: geodot/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      "js/packages/cli/bin/geodot.js",
+      "-c",
+      "0",
+    ]),
+    (error) => {
+      assert.match(error.stderr, /-c requires a value from 1/);
+      assert.match(error.stdout, /Usage: geodot/);
+      return true;
+    },
+  );
+});

@@ -1,6 +1,6 @@
 [package]
 name = "geodot"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Download satellite map tiles from the command line or as a Rust library"
 license = "MIT OR Apache-2.0"

@@ -132,6 +132,23 @@ fn cli_accepts_geojson_url() {
     fs::remove_dir_all(out).unwrap();
 }
 
+#[test]
+fn cli_rejects_invalid_numeric_options() {
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .args(["-j", "https://example.com/area.geojson"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid integer"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .args(["--lat", "NaN"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must be a finite number"));
+}
+
 fn tile_server(requests: usize) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

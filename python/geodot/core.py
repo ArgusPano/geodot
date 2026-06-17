@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 TILE_SIZE = 256
+MAX_ZOOM = 30
 
 USER_AGENTS = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -141,9 +142,29 @@ def tiles_for_options(options: DownloadOptions) -> list[Tile]:
 
 
 def resolve_options(options: DownloadOptions) -> DownloadOptions:
-    if options.geojson and not options.polygon:
-        return replace(options, polygon=load_geojson_polygon(options.geojson))
-    return options
+    resolved = (
+        replace(options, polygon=load_geojson_polygon(options.geojson))
+        if options.geojson and not options.polygon
+        else options
+    )
+    validate_options(resolved)
+    return resolved
+
+
+def validate_options(options: DownloadOptions) -> None:
+    _validate_finite_number("lat", options.lat)
+    _validate_finite_number("lon", options.lon)
+    if options.bottom_right_lat is not None:
+        _validate_finite_number("bottom_right_lat", options.bottom_right_lat)
+    if options.bottom_right_lon is not None:
+        _validate_finite_number("bottom_right_lon", options.bottom_right_lon)
+    for index, point in enumerate(options.polygon or []):
+        _validate_finite_number(f"polygon[{index}].lon", point.lon)
+        _validate_finite_number(f"polygon[{index}].lat", point.lat)
+    _validate_integer_range("zoom", options.zoom, 0, MAX_ZOOM)
+    _validate_integer_range("cols", options.cols, 1, None)
+    _validate_integer_range("rows", options.rows, 1, None)
+    _validate_integer_range("jobs", options.jobs, 1, None)
 
 
 def load_geojson_polygon(source: str | Path) -> list[Coordinate]:
@@ -214,6 +235,22 @@ def _download_tile(tile: Tile) -> bytes | None:
         except OSError:
             continue
     return None
+
+
+def _validate_finite_number(name: str, value: float) -> None:
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+
+
+def _validate_integer_range(name: str, value: int, minimum: int, maximum: int | None) -> None:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < minimum
+        or (maximum is not None and value > maximum)
+    ):
+        limit = f"{minimum} to {maximum}" if maximum is not None else f"at least {minimum}"
+        raise ValueError(f"{name} must be an integer {limit}")
 
 
 def _tile_url(subdomain: str, tile: Tile) -> str:

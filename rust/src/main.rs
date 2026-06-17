@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use geodot::{
-    Coordinate, DownloadOptions, download, load_geojson_polygon, meters_per_pixel,
-    tiles_for_options,
+    Coordinate, DownloadOptions, MAX_ZOOM, download, load_geojson_polygon, meters_per_pixel,
+    tiles_for_options, validate_options,
 };
 use std::path::PathBuf;
 use std::time::Instant;
@@ -15,19 +15,19 @@ use std::time::Instant;
 )]
 struct Args {
     /// Latitude of the top-left point
-    #[arg(short = 'y', long, default_value = "55.7303")]
+    #[arg(short = 'y', long, default_value = "55.7303", value_parser = parse_finite_f64)]
     lat: f64,
 
     /// Longitude of the top-left point
-    #[arg(short = 'x', long, default_value = "37.6504907")]
+    #[arg(short = 'x', long, default_value = "37.6504907", value_parser = parse_finite_f64)]
     lon: f64,
 
     /// Latitude of the bottom-right point
-    #[arg(long = "y2", alias = "bottom-right-lat")]
+    #[arg(long = "y2", alias = "bottom-right-lat", value_parser = parse_finite_f64)]
     bottom_right_lat: Option<f64>,
 
     /// Longitude of the bottom-right point
-    #[arg(long = "x2", alias = "bottom-right-lon")]
+    #[arg(long = "x2", alias = "bottom-right-lon", value_parser = parse_finite_f64)]
     bottom_right_lon: Option<f64>,
 
     /// Closed polygon as 'lon,lat;lon,lat;lon,lat'
@@ -38,16 +38,16 @@ struct Args {
     #[arg(short = 'g', long)]
     geojson: Option<String>,
 
-    /// Zoom level (1-22)
-    #[arg(short, long, default_value = "18")]
+    /// Zoom level (0-30)
+    #[arg(short, long, default_value = "18", value_parser = parse_zoom)]
     zoom: u32,
 
     /// Number of tile columns to the right of center
-    #[arg(short, long, default_value = "3")]
+    #[arg(short, long, default_value = "3", value_parser = parse_positive_u32)]
     cols: u32,
 
     /// Number of tile rows downward from center
-    #[arg(short, long, default_value = "3")]
+    #[arg(short, long, default_value = "3", value_parser = parse_positive_u32)]
     rows: u32,
 
     /// Output directory
@@ -55,7 +55,7 @@ struct Args {
     out: PathBuf,
 
     /// Max concurrent downloads
-    #[arg(short = 'j', long, default_value = "16")]
+    #[arg(short = 'j', long, default_value = "16", value_parser = parse_positive_usize)]
     jobs: usize,
 }
 
@@ -82,6 +82,7 @@ async fn main() -> Result<()> {
         jobs: args.jobs,
         tile_url_template: None,
     };
+    validate_options(&options)?;
     let center = geodot::latlon_to_tile(options.lat, options.lon, options.zoom);
     let selected_tiles = tiles_for_options(&options);
 
@@ -145,5 +146,51 @@ fn parse_polygon(value: &str) -> std::result::Result<Vec<Coordinate>, String> {
     if points.len() < 3 {
         return Err("polygon requires at least three lon,lat pairs".to_string());
     }
+    if points
+        .iter()
+        .any(|point| !point.lon.is_finite() || !point.lat.is_finite())
+    {
+        return Err("polygon coordinates must be finite numbers".to_string());
+    }
     Ok(points)
+}
+
+fn parse_finite_f64(value: &str) -> std::result::Result<f64, String> {
+    let number: f64 = value
+        .parse()
+        .map_err(|_| format!("invalid number: {value}"))?;
+    if !number.is_finite() {
+        return Err("must be a finite number".to_string());
+    }
+    Ok(number)
+}
+
+fn parse_positive_u32(value: &str) -> std::result::Result<u32, String> {
+    let number: u32 = value
+        .parse()
+        .map_err(|_| format!("invalid integer: {value}"))?;
+    if number == 0 {
+        return Err("must be at least 1".to_string());
+    }
+    Ok(number)
+}
+
+fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
+    let number: usize = value
+        .parse()
+        .map_err(|_| format!("invalid integer: {value}"))?;
+    if number == 0 {
+        return Err("must be at least 1".to_string());
+    }
+    Ok(number)
+}
+
+fn parse_zoom(value: &str) -> std::result::Result<u32, String> {
+    let number: u32 = value
+        .parse()
+        .map_err(|_| format!("invalid integer: {value}"))?;
+    if number > MAX_ZOOM {
+        return Err(format!("must be from 0 to {MAX_ZOOM}"));
+    }
+    Ok(number)
 }

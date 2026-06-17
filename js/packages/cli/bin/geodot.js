@@ -46,6 +46,14 @@ const flags = {
   "--jobs": "jobs",
 };
 
+const integerOptions = new Set(["zoom", "cols", "rows", "jobs"]);
+const ranges = {
+  zoom: [0, 30],
+  cols: [1, Number.MAX_SAFE_INTEGER],
+  rows: [1, Number.MAX_SAFE_INTEGER],
+  jobs: [1, Number.MAX_SAFE_INTEGER],
+};
+
 function parseArgs(argv) {
   const options = { ...defaults };
   for (let i = 0; i < argv.length; i += 2) {
@@ -58,14 +66,30 @@ function parseArgs(argv) {
       usage();
       process.exit(1);
     }
-    options[key] =
-      key === "out"
-        ? argv[i + 1]
-        : key === "geojson"
-          ? argv[i + 1]
-          : key === "polygon"
-            ? parsePolygon(argv[i + 1])
-            : Number(argv[i + 1]);
+    if (key === "out" || key === "geojson") {
+      options[key] = argv[i + 1];
+    } else if (key === "polygon") {
+      options[key] = parsePolygon(argv[i + 1]);
+    } else {
+      const value = Number(argv[i + 1]);
+      if (!Number.isFinite(value)) {
+        console.error(`${argv[i]} requires a number, got ${argv[i + 1]}`);
+        usage();
+        process.exit(1);
+      }
+      if (integerOptions.has(key) && !Number.isInteger(value)) {
+        console.error(`${argv[i]} requires an integer, got ${argv[i + 1]}`);
+        usage();
+        process.exit(1);
+      }
+      const [min, max] = ranges[key] ?? [-Infinity, Infinity];
+      if (value < min || value > max) {
+        console.error(`${argv[i]} requires a value from ${min} to ${max}`);
+        usage();
+        process.exit(1);
+      }
+      options[key] = value;
+    }
   }
   return options;
 }
@@ -77,7 +101,9 @@ function parsePolygon(value) {
   });
   if (
     points.length < 3 ||
-    points.some((point) => Number.isNaN(point.lon) || Number.isNaN(point.lat))
+    points.some(
+      (point) => !Number.isFinite(point.lon) || !Number.isFinite(point.lat),
+    )
   ) {
     throw new Error("polygon requires at least three lon,lat pairs");
   }

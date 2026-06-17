@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const TILE_SIZE: u32 = 256;
+pub const MAX_ZOOM: u32 = 30;
 
 const USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -185,6 +186,41 @@ pub fn tiles_for_options(options: &DownloadOptions) -> Vec<Tile> {
     )
 }
 
+pub fn validate_options(options: &DownloadOptions) -> Result<()> {
+    validate_finite_number("lat", options.lat)?;
+    validate_finite_number("lon", options.lon)?;
+    if let Some(lat) = options.bottom_right_lat {
+        validate_finite_number("bottom_right_lat", lat)?;
+    }
+    if let Some(lon) = options.bottom_right_lon {
+        validate_finite_number("bottom_right_lon", lon)?;
+    }
+    for (index, point) in options.polygon.iter().enumerate() {
+        validate_finite_number(&format!("polygon[{index}].lon"), point.lon)?;
+        validate_finite_number(&format!("polygon[{index}].lat"), point.lat)?;
+    }
+    if options.zoom > MAX_ZOOM {
+        bail!("zoom must be an integer from 0 to {MAX_ZOOM}");
+    }
+    if options.cols == 0 {
+        bail!("cols must be an integer at least 1");
+    }
+    if options.rows == 0 {
+        bail!("rows must be an integer at least 1");
+    }
+    if options.jobs == 0 {
+        bail!("jobs must be an integer at least 1");
+    }
+    Ok(())
+}
+
+fn validate_finite_number(name: &str, value: f64) -> Result<()> {
+    if !value.is_finite() {
+        bail!("{name} must be a finite number");
+    }
+    Ok(())
+}
+
 pub async fn load_geojson_polygon(source: &str) -> Result<Vec<Coordinate>> {
     let text = if is_url(source) {
         reqwest::get(source)
@@ -259,6 +295,7 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
     {
         options.polygon = load_geojson_polygon(source).await?;
     }
+    validate_options(&options)?;
     let center = latlon_to_tile(options.lat, options.lon, options.zoom);
     let tiles = tiles_for_options(&options);
     let client = Arc::new(
@@ -610,5 +647,35 @@ mod tests {
         assert!(value["bounds"]["lon_min"].is_number());
         assert!(value["bounds"]["lat_max"].is_number());
         assert!(value["bounds"]["lon_max"].is_number());
+    }
+
+    #[test]
+    fn rejects_invalid_numeric_options() {
+        let err = validate_options(&DownloadOptions {
+            lat: f64::NAN,
+            ..DownloadOptions::default()
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("lat must be a finite number"));
+
+        let err = validate_options(&DownloadOptions {
+            cols: 0,
+            ..DownloadOptions::default()
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cols must be an integer at least 1")
+        );
+
+        let err = validate_options(&DownloadOptions {
+            zoom: MAX_ZOOM + 1,
+            ..DownloadOptions::default()
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("zoom must be an integer from 0 to 30")
+        );
     }
 }

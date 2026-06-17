@@ -1,10 +1,13 @@
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
 from geodot import (
     Coordinate,
     DownloadedTile,
+    DownloadOptions,
     Tile,
+    download,
     latlon_to_tile,
     meters_per_pixel,
     polygon_from_geojson,
@@ -94,3 +97,12 @@ def test_downloaded_tile_serializes_bounds() -> None:
     tile = Tile(x=1, y=2, z=3)
     data = asdict(DownloadedTile(tile=tile, bounds=tile_bounds(tile), path="data/tiles/3/1/2.jpg", bytes=123))
     assert set(data["bounds"]) == {"lat_min", "lon_min", "lat_max", "lon_max"}
+
+
+def test_download_rejects_invalid_numeric_options() -> None:
+    with pytest.raises(ValueError, match="lat must be a finite number"):
+        download(DownloadOptions(lat=float("nan")))
+    with pytest.raises(ValueError, match="cols must be an integer at least 1"):
+        download(DownloadOptions(cols=0))
+    with pytest.raises(ValueError, match="zoom must be an integer 0 to 30"):
+        download(DownloadOptions(zoom=31))
