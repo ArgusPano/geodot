@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use futures::stream::{self, StreamExt};
 use rand::seq::SliceRandom;
 use serde::Serialize;
@@ -28,6 +28,7 @@ pub struct DownloadOptions {
     pub bottom_right_lat: Option<f64>,
     pub bottom_right_lon: Option<f64>,
     pub polygon: Vec<Coordinate>,
+    pub geojson: Option<String>,
     pub zoom: u32,
     pub cols: u32,
     pub rows: u32,
@@ -44,6 +45,7 @@ impl Default for DownloadOptions {
             bottom_right_lat: None,
             bottom_right_lon: None,
             polygon: Vec::new(),
+            geojson: None,
             zoom: 18,
             cols: 3,
             rows: 3,
@@ -183,6 +185,66 @@ pub fn tiles_for_options(options: &DownloadOptions) -> Vec<Tile> {
     )
 }
 
+pub async fn load_geojson_polygon(source: &str) -> Result<Vec<Coordinate>> {
+    let text = if is_url(source) {
+        reqwest::get(source)
+            .await?
+            .error_for_status()?
+            .text()
+            .await?
+    } else {
+        fs::read_to_string(source)?
+    };
+    polygon_from_geojson_str(&text)
+}
+
+pub fn polygon_from_geojson_str(text: &str) -> Result<Vec<Coordinate>> {
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    polygon_from_geojson(&value)
+}
+
+pub fn polygon_from_geojson(value: &serde_json::Value) -> Result<Vec<Coordinate>> {
+    let geometry = find_polygon_geometry(value)
+        .ok_or_else(|| anyhow::anyhow!("GeoJSON does not contain a Polygon geometry"))?;
+    let coordinates = geometry
+        .get("coordinates")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| anyhow::anyhow!("GeoJSON geometry is missing coordinates"))?;
+    let ring = if geometry.get("type").and_then(|value| value.as_str()) == Some("Polygon") {
+        coordinates.first()
+    } else {
+        coordinates
+            .first()
+            .and_then(|polygon| polygon.as_array())
+            .and_then(|polygon| polygon.first())
+    }
+    .and_then(|ring| ring.as_array())
+    .ok_or_else(|| anyhow::anyhow!("GeoJSON polygon is missing an exterior ring"))?;
+    let points: Result<Vec<_>> = ring
+        .iter()
+        .map(|point| {
+            let pair = point
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("GeoJSON coordinates must be lon,lat arrays"))?;
+            Ok(Coordinate {
+                lon: pair
+                    .first()
+                    .and_then(|value| value.as_f64())
+                    .ok_or_else(|| anyhow::anyhow!("GeoJSON longitude must be a number"))?,
+                lat: pair
+                    .get(1)
+                    .and_then(|value| value.as_f64())
+                    .ok_or_else(|| anyhow::anyhow!("GeoJSON latitude must be a number"))?,
+            })
+        })
+        .collect();
+    let points = points?;
+    if points.len() < 3 {
+        bail!("GeoJSON polygon requires at least three lon,lat coordinates");
+    }
+    Ok(points)
+}
+
 pub fn tile_path(out: impl AsRef<Path>, tile: Tile) -> PathBuf {
     out.as_ref()
         .join("tiles")
@@ -191,7 +253,12 @@ pub fn tile_path(out: impl AsRef<Path>, tile: Tile) -> PathBuf {
         .join(format!("{}.jpg", tile.y))
 }
 
-pub async fn download(options: DownloadOptions) -> Result<DownloadReport> {
+pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
+    if options.polygon.len() < 3
+        && let Some(source) = &options.geojson
+    {
+        options.polygon = load_geojson_polygon(source).await?;
+    }
     let center = latlon_to_tile(options.lat, options.lon, options.zoom);
     let tiles = tiles_for_options(&options);
     let client = Arc::new(
@@ -256,6 +323,23 @@ fn tiles_in_range(min_x: u32, max_x: u32, min_y: u32, max_y: u32, z: u32) -> Vec
     (min_y..=max_y)
         .flat_map(|y| (min_x..=max_x).map(move |x| Tile { x, y, z }))
         .collect()
+}
+
+fn find_polygon_geometry(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    match value.get("type")?.as_str()? {
+        "Polygon" | "MultiPolygon" => Some(value),
+        "Feature" => find_polygon_geometry(value.get("geometry")?),
+        "FeatureCollection" => value
+            .get("features")?
+            .as_array()?
+            .iter()
+            .find_map(find_polygon_geometry),
+        _ => None,
+    }
+}
+
+fn is_url(source: &str) -> bool {
+    source.starts_with("http://") || source.starts_with("https://")
 }
 
 fn tile_intersects_polygon(tile: Tile, points: &[Coordinate]) -> bool {
@@ -466,6 +550,44 @@ mod tests {
             },
         ];
         assert_eq!(tile_grid_for_polygon(&polygon, 18).len(), 4);
+    }
+
+    #[test]
+    fn reads_polygon_from_geojson_feature_collection() {
+        let polygon = polygon_from_geojson_str(
+            r#"{
+                "type":"FeatureCollection",
+                "features":[{
+                    "type":"Feature",
+                    "geometry":{
+                        "type":"Polygon",
+                        "coordinates":[[[37.6504,55.7304],[37.652,55.7304],[37.652,55.7297],[37.6504,55.7297],[37.6504,55.7304]]]
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            &polygon[..4],
+            &[
+                Coordinate {
+                    lon: 37.6504,
+                    lat: 55.7304
+                },
+                Coordinate {
+                    lon: 37.652,
+                    lat: 55.7304
+                },
+                Coordinate {
+                    lon: 37.652,
+                    lat: 55.7297
+                },
+                Coordinate {
+                    lon: 37.6504,
+                    lat: 55.7297
+                }
+            ]
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,9 +11,38 @@ import { download } from "@geodot/lib";
 
 const execFileAsync = promisify(execFile);
 const tileBytes = Buffer.alloc(128, "x");
+const geojson = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [37.6504, 55.7304],
+            [37.652, 55.7304],
+            [37.652, 55.7297],
+            [37.6504, 55.7297],
+            [37.6504, 55.7304],
+          ],
+        ],
+      },
+    },
+  ],
+};
 
 async function withTileServer(callback) {
   const server = createServer((request, response) => {
+    if (request.url === "/area.geojson") {
+      const body = JSON.stringify(geojson);
+      response.writeHead(200, {
+        "Content-Type": "application/geo+json",
+        "Content-Length": Buffer.byteLength(body),
+      });
+      response.end(body);
+      return;
+    }
     response.writeHead(200, {
       "Content-Type": "image/jpeg",
       "Content-Length": tileBytes.byteLength,
@@ -23,7 +52,10 @@ async function withTileServer(callback) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await callback(`http://127.0.0.1:${port}/{z}/{x}/{y}.jpg`);
+    await callback(
+      `http://127.0.0.1:${port}/{z}/{x}/{y}.jpg`,
+      `http://127.0.0.1:${port}/area.geojson`,
+    );
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -75,9 +107,32 @@ test("library download writes tiles and manifest", async () => {
   await rm(out, { recursive: true, force: true });
 });
 
+test("library download accepts a local GeoJSON file", async () => {
+  const out = await mkdtemp(path.join(tmpdir(), "geodot-lib-geojson-"));
+  const geojsonFile = path.join(out, "area.geojson");
+  await writeFile(geojsonFile, JSON.stringify(geojson));
+  await withTileServer(async (template) => {
+    process.env.GEODOT_TILE_URL_TEMPLATE = template;
+    try {
+      const report = await download({
+        geojson: geojsonFile,
+        zoom: 18,
+        out,
+        jobs: 1,
+      });
+      assert.equal(report.tiles.length, 4);
+      assert.deepEqual(report.failed, []);
+      await assertDownloadOutput(out);
+    } finally {
+      delete process.env.GEODOT_TILE_URL_TEMPLATE;
+    }
+  });
+  await rm(out, { recursive: true, force: true });
+});
+
 test("CLI download writes tiles and manifest", async () => {
   const out = await mkdtemp(path.join(tmpdir(), "geodot-cli-"));
-  await withTileServer(async (template) => {
+  await withTileServer(async (template, geojsonUrl) => {
     await execFileAsync(
       process.execPath,
       [
@@ -94,6 +149,8 @@ test("CLI download writes tiles and manifest", async () => {
         "1",
         "-j",
         "1",
+        "--geojson",
+        geojsonUrl,
         "-o",
         out,
       ],

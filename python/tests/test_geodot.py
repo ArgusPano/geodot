@@ -7,12 +7,34 @@ from geodot import (
     Tile,
     latlon_to_tile,
     meters_per_pixel,
+    polygon_from_geojson,
     tile_bounds,
     tile_grid,
     tile_grid_between,
     tile_grid_for_polygon,
     tile_path,
 )
+
+GEOJSON = {
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [37.6504, 55.7304],
+                        [37.6520, 55.7304],
+                        [37.6520, 55.7297],
+                        [37.6504, 55.7297],
+                        [37.6504, 55.7304],
+                    ]
+                ],
+            },
+        }
+    ],
+}
 
 
 def test_latlon_to_tile() -> None:
@@ -50,6 +72,15 @@ def test_tile_grid_for_polygon() -> None:
         Coordinate(lon=37.6504, lat=55.7297),
     ]
     assert len(tile_grid_for_polygon(polygon, 18)) == 4
+
+
+def test_polygon_from_geojson_feature_collection() -> None:
+    assert polygon_from_geojson(GEOJSON)[:4] == [
+        Coordinate(lon=37.6504, lat=55.7304),
+        Coordinate(lon=37.6520, lat=55.7304),
+        Coordinate(lon=37.6520, lat=55.7297),
+        Coordinate(lon=37.6504, lat=55.7297),
+    ]
 
 
 def test_tile_bounds_and_resolution() -> None:

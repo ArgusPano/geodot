@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const TILE_SIZE = 256;
@@ -125,6 +125,7 @@ export async function download(options = {}) {
     bottomRightLat: undefined,
     bottomRightLon: undefined,
     polygon: undefined,
+    geojson: undefined,
     zoom: 18,
     cols: 3,
     rows: 3,
@@ -132,6 +133,9 @@ export async function download(options = {}) {
     jobs: 16,
     ...options,
   };
+  if (config.geojson && !config.polygon) {
+    config.polygon = await loadGeoJSONPolygon(config.geojson);
+  }
   const center = latlonToTile(config.lat, config.lon, config.zoom);
   const queue = tilesForOptions(config);
   const tiles = [];
@@ -165,6 +169,53 @@ export async function download(options = {}) {
     JSON.stringify(report, null, 2),
   );
   return report;
+}
+
+export async function loadGeoJSONPolygon(source) {
+  const text = isUrl(source)
+    ? await fetch(source).then((response) => {
+        if (!response.ok) throw new Error(`failed to fetch GeoJSON: ${source}`);
+        return response.text();
+      })
+    : await readFile(source, "utf8");
+  return polygonFromGeoJSON(JSON.parse(text));
+}
+
+export function polygonFromGeoJSON(geojson) {
+  const geometry = findPolygonGeometry(geojson);
+  if (!geometry) throw new Error("GeoJSON does not contain a Polygon geometry");
+  const ring =
+    geometry.type === "Polygon"
+      ? geometry.coordinates[0]
+      : geometry.coordinates[0]?.[0];
+  const points =
+    ring?.map(([lon, lat]) => ({ lon: Number(lon), lat: Number(lat) })) ?? [];
+  if (
+    points.length < 3 ||
+    points.some((point) => Number.isNaN(point.lon) || Number.isNaN(point.lat))
+  ) {
+    throw new Error(
+      "GeoJSON polygon requires at least three lon,lat coordinates",
+    );
+  }
+  return points;
+}
+
+function findPolygonGeometry(value) {
+  if (!value || typeof value !== "object") return undefined;
+  if (value.type === "Polygon" || value.type === "MultiPolygon") return value;
+  if (value.type === "Feature") return findPolygonGeometry(value.geometry);
+  if (value.type === "FeatureCollection") {
+    for (const feature of value.features ?? []) {
+      const geometry = findPolygonGeometry(feature);
+      if (geometry) return geometry;
+    }
+  }
+  return undefined;
+}
+
+function isUrl(source) {
+  return /^https?:\/\//i.test(source);
 }
 
 function manifestBounds(tile) {

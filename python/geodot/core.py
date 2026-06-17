@@ -6,7 +6,7 @@ import os
 import random
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 TILE_SIZE = 256
@@ -53,6 +53,7 @@ class DownloadOptions:
     bottom_right_lat: float | None = None
     bottom_right_lon: float | None = None
     polygon: list[Coordinate] | None = None
+    geojson: str | Path | None = None
     zoom: int = 18
     cols: int = 3
     rows: int = 3
@@ -139,12 +140,40 @@ def tiles_for_options(options: DownloadOptions) -> list[Tile]:
     return tile_grid(options.lat, options.lon, options.zoom, options.cols, options.rows)
 
 
+def resolve_options(options: DownloadOptions) -> DownloadOptions:
+    if options.geojson and not options.polygon:
+        return replace(options, polygon=load_geojson_polygon(options.geojson))
+    return options
+
+
+def load_geojson_polygon(source: str | Path) -> list[Coordinate]:
+    source_text = str(source)
+    if source_text.startswith(("http://", "https://")):
+        with urllib.request.urlopen(source_text, timeout=15) as response:
+            text = response.read().decode("utf-8")
+    else:
+        text = Path(source).read_text(encoding="utf-8")
+    return polygon_from_geojson(json.loads(text))
+
+
+def polygon_from_geojson(geojson: object) -> list[Coordinate]:
+    geometry = _find_polygon_geometry(geojson)
+    if geometry is None:
+        raise ValueError("GeoJSON does not contain a Polygon geometry")
+    coordinates = geometry["coordinates"]
+    ring = coordinates[0] if geometry["type"] == "Polygon" else coordinates[0][0]
+    points = [Coordinate(lon=float(point[0]), lat=float(point[1])) for point in ring]
+    if len(points) < 3:
+        raise ValueError("GeoJSON polygon requires at least three lon,lat coordinates")
+    return points
+
+
 def tile_path(out: str | Path, tile: Tile) -> Path:
     return Path(out) / "tiles" / str(tile.z) / str(tile.x) / f"{tile.y}.jpg"
 
 
 def download(options: DownloadOptions | None = None) -> DownloadReport:
-    options = options or DownloadOptions()
+    options = resolve_options(options or DownloadOptions())
     center = latlon_to_tile(options.lat, options.lon, options.zoom)
     tiles = tiles_for_options(options)
     downloaded: list[DownloadedTile] = []
@@ -196,6 +225,21 @@ def _tile_url(subdomain: str, tile: Tile) -> str:
 
 def _tiles_in_range(min_x: int, max_x: int, min_y: int, max_y: int, z: int) -> list[Tile]:
     return [Tile(x, y, z) for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1)]
+
+
+def _find_polygon_geometry(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("type") in {"Polygon", "MultiPolygon"}:
+        return value
+    if value.get("type") == "Feature":
+        return _find_polygon_geometry(value.get("geometry"))
+    if value.get("type") == "FeatureCollection":
+        for feature in value.get("features", []):
+            geometry = _find_polygon_geometry(feature)
+            if geometry is not None:
+                return geometry
+    return None
 
 
 def _tile_intersects_polygon(tile: Tile, points: list[Coordinate]) -> bool:

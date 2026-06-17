@@ -2,6 +2,7 @@
 import {
   download,
   latlonToTile,
+  loadGeoJSONPolygon,
   metersPerPixel,
   tilesForOptions,
 } from "@geodot/lib";
@@ -12,6 +13,7 @@ const defaults = {
   bottomRightLat: undefined,
   bottomRightLon: undefined,
   polygon: undefined,
+  geojson: undefined,
   zoom: 18,
   cols: 3,
   rows: 3,
@@ -30,6 +32,8 @@ const flags = {
   "--bottom-right-lat": "bottomRightLat",
   "-p": "polygon",
   "--polygon": "polygon",
+  "-g": "geojson",
+  "--geojson": "geojson",
   "-z": "zoom",
   "--zoom": "zoom",
   "-c": "cols",
@@ -57,9 +61,11 @@ function parseArgs(argv) {
     options[key] =
       key === "out"
         ? argv[i + 1]
-        : key === "polygon"
-          ? parsePolygon(argv[i + 1])
-          : Number(argv[i + 1]);
+        : key === "geojson"
+          ? argv[i + 1]
+          : key === "polygon"
+            ? parsePolygon(argv[i + 1])
+            : Number(argv[i + 1]);
   }
   return options;
 }
@@ -80,11 +86,14 @@ function parsePolygon(value) {
 
 function usage() {
   console.log(
-    'Usage: geodot [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs]',
+    'Usage: geodot [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs]',
   );
 }
 
 const options = parseArgs(process.argv.slice(2));
+if (options.geojson && !options.polygon) {
+  options.polygon = await loadGeoJSONPolygon(options.geojson);
+}
 const start = performance.now();
 const center = latlonToTile(options.lat, options.lon, options.zoom);
 const selectedTiles = tilesForOptions(options);

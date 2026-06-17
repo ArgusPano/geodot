@@ -57,6 +57,10 @@ geodot -x 37.6504907 -y 55.7303 -z 18 -c 3 -r 3 -o data -j 16
 geodot -x 37.6504907 -y 55.7303 --x2 37.652 --y2 55.7297 -z 18 -o data
 
 geodot -p "37.6504,55.7304;37.6520,55.7304;37.6520,55.7297;37.6504,55.7297" -z 18 -o data
+
+geodot --geojson area.geojson -z 18 -o data
+
+geodot --geojson https://example.com/area.geojson -z 18 -o data
 ```
 
 | Flag | Default | Description |
@@ -66,6 +70,7 @@ geodot -p "37.6504,55.7304;37.6520,55.7304;37.6520,55.7297;37.6504,55.7297" -z 1
 | `--x2`, `--bottom-right-lon` | none | Bottom-right longitude |
 | `--y2`, `--bottom-right-lat` | none | Bottom-right latitude |
 | `-p`, `--polygon` | none | Closed area as `lon,lat;lon,lat;lon,lat` |
+| `-g`, `--geojson` | none | GeoJSON Polygon, Feature, or FeatureCollection file path or URL |
 | `-z`, `--zoom` | `18` | Zoom level |
 | `-c`, `--cols` | `3` | Tile columns to the right of the top-left tile |
 | `-r`, `--rows` | `3` | Tile rows downward from the top-left tile |
@@ -121,6 +126,8 @@ Tile images are always 256x256 pixels. `geodot` does not currently support other
 
 Polygon downloads include tiles whose center or corners fall inside the polygon, plus tiles containing polygon vertices.
 
+GeoJSON input uses the first Polygon geometry found in a Polygon, MultiPolygon, Feature, or FeatureCollection and uses its exterior ring as the download polygon.
+
 ## Python API
 
 ```python
@@ -147,6 +154,7 @@ report = download(DownloadOptions(
     rows=3,
     out="data",
     jobs=16,
+    geojson=None,
 ))
 ```
 
@@ -176,6 +184,7 @@ const report = await download({
   rows: 3,
   out: 'data',
   jobs: 16,
+  geojson: undefined,
 });
 ```
 
@@ -208,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
         rows: 3,
         out: "data".into(),
         jobs: 16,
+        geojson: None,
         tile_url_template: None,
     })
     .await?;

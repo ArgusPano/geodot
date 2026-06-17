@@ -3,7 +3,15 @@ from __future__ import annotations
 import argparse
 import time
 
-from .core import Coordinate, DownloadOptions, download, latlon_to_tile, meters_per_pixel, tiles_for_options
+from .core import (
+    Coordinate,
+    DownloadOptions,
+    download,
+    latlon_to_tile,
+    meters_per_pixel,
+    resolve_options,
+    tiles_for_options,
+)
 
 
 def main() -> None:
@@ -15,6 +23,7 @@ def main() -> None:
         "--x2", "--bottom-right-lon", dest="bottom_right_lon", type=float, help="bottom-right longitude"
     )
     parser.add_argument("-p", "--polygon", type=_parse_polygon, help="closed area as 'lon,lat;lon,lat;lon,lat'")
+    parser.add_argument("-g", "--geojson", help="GeoJSON Polygon, Feature, or FeatureCollection file path or URL")
     parser.add_argument("-z", "--zoom", type=int, default=18, help="zoom level (1-22)")
     parser.add_argument("-c", "--cols", type=int, default=3, help="tile columns to the right of center")
     parser.add_argument("-r", "--rows", type=int, default=3, help="tile rows downward from center")
@@ -23,7 +32,7 @@ def main() -> None:
     args = parser.parse_args()
 
     start = time.perf_counter()
-    options = DownloadOptions(**vars(args))
+    options = resolve_options(DownloadOptions(**vars(args)))
     center = latlon_to_tile(args.lat, args.lon, args.zoom)
     selected_tiles = tiles_for_options(options)
     print("\n  geodot - satellite tiles")

@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   download,
   latlonToTile,
+  polygonFromGeoJSON,
   metersPerPixel,
   tileBounds,
   tileGrid,
@@ -13,6 +14,27 @@ import {
   tileGridForPolygon,
   tilePath,
 } from "@geodot/lib";
+
+const geojson = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [37.6504, 55.7304],
+            [37.652, 55.7304],
+            [37.652, 55.7297],
+            [37.6504, 55.7297],
+            [37.6504, 55.7304],
+          ],
+        ],
+      },
+    },
+  ],
+};
 
 test("latlonToTile converts coordinates", () => {
   assert.deepEqual(latlonToTile(55.7303, 37.6504907, 18), {
@@ -52,6 +74,15 @@ test("tileGridForPolygon selects tiles inside a polygon", () => {
     { lon: 37.6504, lat: 55.7297 },
   ];
   assert.equal(tileGridForPolygon(polygon, 18).length, 4);
+});
+
+test("polygonFromGeoJSON reads a FeatureCollection polygon", () => {
+  assert.deepEqual(polygonFromGeoJSON(geojson).slice(0, 4), [
+    { lon: 37.6504, lat: 55.7304 },
+    { lon: 37.652, lat: 55.7304 },
+    { lon: 37.652, lat: 55.7297 },
+    { lon: 37.6504, lat: 55.7297 },
+  ]);
 });
 
 test("tileBounds and resolution include the source point", () => {

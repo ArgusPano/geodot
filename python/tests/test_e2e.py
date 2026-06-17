@@ -12,10 +12,38 @@ from pathlib import Path
 from geodot import DownloadOptions, download
 
 TILE_BYTES = b"x" * 128
+GEOJSON = {
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [37.6504, 55.7304],
+                        [37.6520, 55.7304],
+                        [37.6520, 55.7297],
+                        [37.6504, 55.7297],
+                        [37.6504, 55.7304],
+                    ]
+                ],
+            },
+        }
+    ],
+}
 
 
 class TileHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self.path == "/area.geojson":
+            body = json.dumps(GEOJSON).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/geo+json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(TILE_BYTES)))
@@ -56,6 +84,18 @@ def test_library_download_e2e(tmp_path: Path, monkeypatch) -> None:
     assert_download_output(tmp_path)
 
 
+def test_library_download_accepts_local_geojson(tmp_path: Path, monkeypatch) -> None:
+    geojson_file = tmp_path / "area.geojson"
+    geojson_file.write_text(json.dumps(GEOJSON), encoding="utf-8")
+    with tile_server() as template:
+        monkeypatch.setenv("GEODOT_TILE_URL_TEMPLATE", template)
+        report = download(DownloadOptions(geojson=geojson_file, zoom=18, out=tmp_path, jobs=1))
+
+    assert len(report.tiles) == 4
+    assert report.failed == []
+    assert_download_output(tmp_path)
+
+
 def test_cli_download_e2e(tmp_path: Path) -> None:
     with tile_server() as template:
         env = {**os.environ, "GEODOT_TILE_URL_TEMPLATE": template}
@@ -74,6 +114,33 @@ def test_cli_download_e2e(tmp_path: Path) -> None:
                 "1",
                 "-r",
                 "1",
+                "-j",
+                "1",
+                "-o",
+                str(tmp_path),
+            ],
+            check=True,
+            capture_output=True,
+            env=env,
+            text=True,
+        )
+
+    assert_download_output(tmp_path)
+
+
+def test_cli_download_accepts_geojson_url(tmp_path: Path) -> None:
+    with tile_server() as template:
+        geojson_url = template.split("/{z}", 1)[0] + "/area.geojson"
+        env = {**os.environ, "GEODOT_TILE_URL_TEMPLATE": template}
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geodot.cli",
+                "--geojson",
+                geojson_url,
+                "-z",
+                "18",
                 "-j",
                 "1",
                 "-o",

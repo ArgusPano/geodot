@@ -1,6 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
-use geodot::{Coordinate, DownloadOptions, download, meters_per_pixel, tiles_for_options};
+use geodot::{
+    Coordinate, DownloadOptions, download, load_geojson_polygon, meters_per_pixel,
+    tiles_for_options,
+};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -31,6 +34,10 @@ struct Args {
     #[arg(short = 'p', long, value_parser = parse_polygon)]
     polygon: Option<Vec<Coordinate>>,
 
+    /// GeoJSON Polygon, Feature, or FeatureCollection file path or URL
+    #[arg(short = 'g', long)]
+    geojson: Option<String>,
+
     /// Zoom level (1-22)
     #[arg(short, long, default_value = "18")]
     zoom: u32,
@@ -56,12 +63,18 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let start = Instant::now();
+    let polygon = match (args.polygon, args.geojson.as_deref()) {
+        (Some(polygon), _) => polygon,
+        (None, Some(source)) => load_geojson_polygon(source).await?,
+        (None, None) => Vec::new(),
+    };
     let options = DownloadOptions {
         lat: args.lat,
         lon: args.lon,
         bottom_right_lat: args.bottom_right_lat,
         bottom_right_lon: args.bottom_right_lon,
-        polygon: args.polygon.unwrap_or_default(),
+        polygon,
+        geojson: args.geojson,
         zoom: args.zoom,
         cols: args.cols,
         rows: args.rows,

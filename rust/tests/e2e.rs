@@ -9,6 +9,22 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TILE_BYTES: &[u8] = &[b'x'; 128];
+const GEOJSON: &str = r#"{
+  "type": "FeatureCollection",
+  "features": [{
+    "type": "Feature",
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [[
+        [37.6504, 55.7304],
+        [37.6520, 55.7304],
+        [37.6520, 55.7297],
+        [37.6504, 55.7297],
+        [37.6504, 55.7304]
+      ]]
+    }
+  }]
+}"#;
 
 #[test]
 fn library_and_cli_write_tiles_and_manifest() {
@@ -62,6 +78,60 @@ fn library_and_cli_write_tiles_and_manifest() {
     fs::remove_dir_all(cli_out).unwrap();
 }
 
+#[test]
+fn library_accepts_local_geojson() {
+    let (template, server) = tile_server(4);
+    let out = temp_dir("geodot-lib-geojson");
+    let geojson_file = out.join("area.geojson");
+    fs::write(&geojson_file, GEOJSON).unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let report = runtime
+        .block_on(download(DownloadOptions {
+            geojson: Some(geojson_file.to_string_lossy().into_owned()),
+            zoom: 18,
+            out: out.clone(),
+            jobs: 1,
+            tile_url_template: Some(template),
+            ..DownloadOptions::default()
+        }))
+        .unwrap();
+    assert_eq!(report.tiles.len(), 4);
+    assert!(report.failed.is_empty());
+    assert_download_output(&out);
+
+    server.join().unwrap();
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn cli_accepts_geojson_url() {
+    let (template, server) = tile_server(5);
+    let out = temp_dir("geodot-cli-geojson");
+    let base_url = template.split("/{z}").next().unwrap();
+    let geojson_url = format!("{base_url}/area.geojson");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .env("GEODOT_TILE_URL_TEMPLATE", &template)
+        .args([
+            "--geojson",
+            &geojson_url,
+            "-z",
+            "18",
+            "-j",
+            "1",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_download_output(&out);
+
+    server.join().unwrap();
+    fs::remove_dir_all(out).unwrap();
+}
+
 fn tile_server(requests: usize) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -69,7 +139,17 @@ fn tile_server(requests: usize) -> (String, thread::JoinHandle<()>) {
         for stream in listener.incoming().take(requests) {
             let mut stream = stream.unwrap();
             let mut buffer = [0; 1024];
-            let _ = stream.read(&mut buffer);
+            let size = stream.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..size]);
+            if request.starts_with("GET /area.geojson ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/geo+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    GEOJSON.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(GEOJSON.as_bytes()).unwrap();
+                continue;
+            }
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 TILE_BYTES.len()
