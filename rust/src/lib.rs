@@ -1,0 +1,492 @@
+use anyhow::Result;
+use futures::stream::{self, StreamExt};
+use rand::seq::SliceRandom;
+use serde::Serialize;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+pub const TILE_SIZE: u32 = 256;
+
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+];
+
+const SUBDOMAINS: &[&str] = &["mt0", "mt1", "mt2", "mt3"];
+const TILE_URL_TEMPLATE_ENV: &str = "GEODOT_TILE_URL_TEMPLATE";
+
+#[derive(Debug, Clone)]
+pub struct DownloadOptions {
+    pub lat: f64,
+    pub lon: f64,
+    pub bottom_right_lat: Option<f64>,
+    pub bottom_right_lon: Option<f64>,
+    pub polygon: Vec<Coordinate>,
+    pub zoom: u32,
+    pub cols: u32,
+    pub rows: u32,
+    pub out: PathBuf,
+    pub jobs: usize,
+    pub tile_url_template: Option<String>,
+}
+
+impl Default for DownloadOptions {
+    fn default() -> Self {
+        Self {
+            lat: 55.7303,
+            lon: 37.6504907,
+            bottom_right_lat: None,
+            bottom_right_lon: None,
+            polygon: Vec::new(),
+            zoom: 18,
+            cols: 3,
+            rows: 3,
+            out: PathBuf::from("data"),
+            jobs: 16,
+            tile_url_template: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Coordinate {
+    pub lon: f64,
+    pub lat: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Tile {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TileBounds {
+    pub lat_min: f64,
+    pub lon_min: f64,
+    pub lat_max: f64,
+    pub lon_max: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadedTile {
+    pub tile: Tile,
+    pub bounds: TileBounds,
+    pub path: PathBuf,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadReport {
+    pub center: Tile,
+    pub tiles: Vec<DownloadedTile>,
+    pub failed: Vec<Tile>,
+}
+
+pub fn latlon_to_tile(lat: f64, lon: f64, z: u32) -> Tile {
+    let n = 2u64.pow(z) as f64;
+    let x = ((lon + 180.0) / 360.0 * n).floor() as u32;
+    let lat_rad = lat.to_radians();
+    let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
+        .floor() as u32;
+    Tile { x, y, z }
+}
+
+pub fn tile_bounds(tile: Tile) -> TileBounds {
+    let n = 2u64.pow(tile.z) as f64;
+    let lon_min = tile.x as f64 / n * 360.0 - 180.0;
+    let lon_max = (tile.x + 1) as f64 / n * 360.0 - 180.0;
+    let lat_max = ((std::f64::consts::PI * (1.0 - 2.0 * tile.y as f64 / n)).sinh())
+        .atan()
+        .to_degrees();
+    let lat_min = ((std::f64::consts::PI * (1.0 - 2.0 * (tile.y + 1) as f64 / n)).sinh())
+        .atan()
+        .to_degrees();
+    TileBounds {
+        lat_min,
+        lon_min,
+        lat_max,
+        lon_max,
+    }
+}
+
+pub fn meters_per_pixel(lat: f64, z: u32) -> f64 {
+    let world_pixels = TILE_SIZE as f64 * (2u64.pow(z) as f64);
+    40_075_016.686 / world_pixels * lat.to_radians().cos()
+}
+
+pub fn tile_grid(lat: f64, lon: f64, zoom: u32, cols: u32, rows: u32) -> Vec<Tile> {
+    let center = latlon_to_tile(lat, lon, zoom);
+    (0..rows)
+        .flat_map(|row| {
+            (0..cols).map(move |col| Tile {
+                x: center.x + col,
+                y: center.y + row,
+                z: zoom,
+            })
+        })
+        .collect()
+}
+
+pub fn tile_grid_between(
+    top_left_lat: f64,
+    top_left_lon: f64,
+    bottom_right_lat: f64,
+    bottom_right_lon: f64,
+    zoom: u32,
+) -> Vec<Tile> {
+    let a = latlon_to_tile(top_left_lat, top_left_lon, zoom);
+    let b = latlon_to_tile(bottom_right_lat, bottom_right_lon, zoom);
+    tiles_in_range(a.x.min(b.x), a.x.max(b.x), a.y.min(b.y), a.y.max(b.y), zoom)
+}
+
+pub fn tile_grid_for_polygon(points: &[Coordinate], zoom: u32) -> Vec<Tile> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    let min_lat = points.iter().map(|p| p.lat).fold(f64::INFINITY, f64::min);
+    let max_lat = points
+        .iter()
+        .map(|p| p.lat)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_lon = points.iter().map(|p| p.lon).fold(f64::INFINITY, f64::min);
+    let max_lon = points
+        .iter()
+        .map(|p| p.lon)
+        .fold(f64::NEG_INFINITY, f64::max);
+    tile_grid_between(max_lat, min_lon, min_lat, max_lon, zoom)
+        .into_iter()
+        .filter(|tile| tile_intersects_polygon(*tile, points))
+        .collect()
+}
+
+pub fn tiles_for_options(options: &DownloadOptions) -> Vec<Tile> {
+    if options.polygon.len() >= 3 {
+        return tile_grid_for_polygon(&options.polygon, options.zoom);
+    }
+    if let (Some(lat2), Some(lon2)) = (options.bottom_right_lat, options.bottom_right_lon) {
+        return tile_grid_between(options.lat, options.lon, lat2, lon2, options.zoom);
+    }
+    tile_grid(
+        options.lat,
+        options.lon,
+        options.zoom,
+        options.cols,
+        options.rows,
+    )
+}
+
+pub fn tile_path(out: impl AsRef<Path>, tile: Tile) -> PathBuf {
+    out.as_ref()
+        .join("tiles")
+        .join(tile.z.to_string())
+        .join(tile.x.to_string())
+        .join(format!("{}.jpg", tile.y))
+}
+
+pub async fn download(options: DownloadOptions) -> Result<DownloadReport> {
+    let center = latlon_to_tile(options.lat, options.lon, options.zoom);
+    let tiles = tiles_for_options(&options);
+    let client = Arc::new(
+        reqwest::Client::builder()
+            .user_agent(random_ua())
+            .gzip(true)
+            .brotli(true)
+            .build()?,
+    );
+
+    let tile_url_template = Arc::new(
+        options
+            .tile_url_template
+            .clone()
+            .or_else(|| env::var(TILE_URL_TEMPLATE_ENV).ok()),
+    );
+
+    let results: Vec<_> = stream::iter(tiles)
+        .map(|tile| {
+            let client = client.clone();
+            let tile_url_template = tile_url_template.clone();
+            async move {
+                let data = download_tile(&client, tile, tile_url_template.as_deref()).await;
+                (tile, data)
+            }
+        })
+        .buffer_unordered(options.jobs.max(1))
+        .collect()
+        .await;
+
+    let mut downloaded = Vec::new();
+    let mut failed = Vec::new();
+    for (tile, data) in results {
+        match data {
+            Some(bytes) => {
+                let path = tile_path(&options.out, tile);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&path, &bytes)?;
+                downloaded.push(DownloadedTile {
+                    tile,
+                    bounds: tile_bounds(tile),
+                    path,
+                    bytes: bytes.len(),
+                });
+            }
+            None => failed.push(tile),
+        }
+    }
+
+    let report = DownloadReport {
+        center,
+        tiles: downloaded,
+        failed,
+    };
+    write_manifest(&options.out, &report)?;
+    Ok(report)
+}
+
+fn tiles_in_range(min_x: u32, max_x: u32, min_y: u32, max_y: u32, z: u32) -> Vec<Tile> {
+    (min_y..=max_y)
+        .flat_map(|y| (min_x..=max_x).map(move |x| Tile { x, y, z }))
+        .collect()
+}
+
+fn tile_intersects_polygon(tile: Tile, points: &[Coordinate]) -> bool {
+    let bounds = tile_bounds(tile);
+    let center = tile_center(tile);
+    if point_in_polygon(center, points) {
+        return true;
+    }
+    let corners = [
+        Coordinate {
+            lon: bounds.lon_min,
+            lat: bounds.lat_min,
+        },
+        Coordinate {
+            lon: bounds.lon_min,
+            lat: bounds.lat_max,
+        },
+        Coordinate {
+            lon: bounds.lon_max,
+            lat: bounds.lat_min,
+        },
+        Coordinate {
+            lon: bounds.lon_max,
+            lat: bounds.lat_max,
+        },
+    ];
+    corners
+        .iter()
+        .any(|corner| point_in_polygon(*corner, points))
+        || points.iter().any(|point| {
+            point.lon >= bounds.lon_min
+                && point.lon <= bounds.lon_max
+                && point.lat >= bounds.lat_min
+                && point.lat <= bounds.lat_max
+        })
+}
+
+fn tile_center(tile: Tile) -> Coordinate {
+    let bounds = tile_bounds(tile);
+    Coordinate {
+        lon: (bounds.lon_min + bounds.lon_max) / 2.0,
+        lat: (bounds.lat_min + bounds.lat_max) / 2.0,
+    }
+}
+
+fn point_in_polygon(point: Coordinate, polygon: &[Coordinate]) -> bool {
+    let mut inside = false;
+    let mut previous = polygon[polygon.len() - 1];
+    for &current in polygon {
+        if (current.lat > point.lat) != (previous.lat > point.lat) {
+            let lon = (previous.lon - current.lon) * (point.lat - current.lat)
+                / (previous.lat - current.lat)
+                + current.lon;
+            if point.lon < lon {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn write_manifest(out: impl AsRef<Path>, report: &DownloadReport) -> Result<()> {
+    fs::create_dir_all(&out)?;
+    let manifest = out.as_ref().join("manifest.json");
+    fs::write(manifest, serde_json::to_vec_pretty(report)?)?;
+    Ok(())
+}
+
+async fn download_tile(
+    client: &reqwest::Client,
+    tile: Tile,
+    tile_url_template: Option<&str>,
+) -> Option<Vec<u8>> {
+    for &sub in SUBDOMAINS {
+        let url = tile_url(sub, tile, tile_url_template);
+        let result = client
+            .get(&url)
+            .header("User-Agent", random_ua())
+            .header(
+                "Accept",
+                "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            )
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Referer", "https://www.google.com/maps")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await;
+        match result {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(data) = resp.bytes().await
+                    && data.len() > 100
+                {
+                    return Some(data.to_vec());
+                }
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+fn tile_url(subdomain: &str, tile: Tile, tile_url_template: Option<&str>) -> String {
+    if let Some(template) = tile_url_template {
+        return template
+            .replace("{sub}", subdomain)
+            .replace("{x}", &tile.x.to_string())
+            .replace("{y}", &tile.y.to_string())
+            .replace("{z}", &tile.z.to_string());
+    }
+    format!(
+        "https://{subdomain}.google.com/vt/lyrs=s&x={}&y={}&z={}",
+        tile.x, tile.y, tile.z
+    )
+}
+
+fn random_ua() -> &'static str {
+    let mut rng = rand::thread_rng();
+    USER_AGENTS.choose(&mut rng).unwrap_or(&USER_AGENTS[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_lat_lon_to_tile() {
+        assert_eq!(
+            latlon_to_tile(55.7303, 37.6504907, 18),
+            Tile {
+                x: 158488,
+                y: 81979,
+                z: 18
+            }
+        );
+    }
+
+    #[test]
+    fn builds_tile_grid_to_right_and_down() {
+        let tiles = tile_grid(55.7303, 37.6504907, 18, 2, 2);
+        assert_eq!(tiles.len(), 4);
+        assert_eq!(
+            tiles[0],
+            Tile {
+                x: 158488,
+                y: 81979,
+                z: 18
+            }
+        );
+        assert_eq!(
+            tiles[3],
+            Tile {
+                x: 158489,
+                y: 81980,
+                z: 18
+            }
+        );
+    }
+
+    #[test]
+    fn builds_tile_grid_between_corners() {
+        let tiles = tile_grid_between(55.7303, 37.6504907, 55.7297, 37.652, 18);
+        assert_eq!(
+            tiles,
+            vec![
+                Tile {
+                    x: 158488,
+                    y: 81979,
+                    z: 18
+                },
+                Tile {
+                    x: 158489,
+                    y: 81979,
+                    z: 18
+                },
+                Tile {
+                    x: 158488,
+                    y: 81980,
+                    z: 18
+                },
+                Tile {
+                    x: 158489,
+                    y: 81980,
+                    z: 18
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_tile_grid_for_polygon() {
+        let polygon = vec![
+            Coordinate {
+                lon: 37.6504,
+                lat: 55.7304,
+            },
+            Coordinate {
+                lon: 37.6520,
+                lat: 55.7304,
+            },
+            Coordinate {
+                lon: 37.6520,
+                lat: 55.7297,
+            },
+            Coordinate {
+                lon: 37.6504,
+                lat: 55.7297,
+            },
+        ];
+        assert_eq!(tile_grid_for_polygon(&polygon, 18).len(), 4);
+    }
+
+    #[test]
+    fn builds_nested_tile_path() {
+        let path = tile_path("data", Tile { x: 1, y: 2, z: 3 });
+        assert_eq!(path, PathBuf::from("data/tiles/3/1/2.jpg"));
+    }
+
+    #[test]
+    fn serializes_downloaded_tile_bounds() {
+        let tile = Tile { x: 1, y: 2, z: 3 };
+        let value = serde_json::to_value(DownloadedTile {
+            tile,
+            bounds: tile_bounds(tile),
+            path: PathBuf::from("data/tiles/3/1/2.jpg"),
+            bytes: 123,
+        })
+        .unwrap();
+        assert!(value["bounds"]["lat_min"].is_number());
+        assert!(value["bounds"]["lon_min"].is_number());
+        assert!(value["bounds"]["lat_max"].is_number());
+        assert!(value["bounds"]["lon_max"].is_number());
+    }
+}

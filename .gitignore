@@ -1,0 +1,26 @@
+.DS_Store
+
+# Build outputs
+target/
+dist/
+build/
+coverage/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# JavaScript
+node_modules/
+npm-debug.log*
+
+# Rust
+.ruff_cache
+
+# geodot output
+data/
+tiles/

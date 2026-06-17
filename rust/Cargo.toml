@@ -1,0 +1,31 @@
+[package]
+name = "geodot"
+version = "0.1.0"
+edition = "2024"
+description = "Download satellite map tiles from the command line or as a Rust library"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ArgusPano/geodot"
+readme = "../README.md"
+
+[lib]
+name = "geodot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "geodot"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+rand = "0.8"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
