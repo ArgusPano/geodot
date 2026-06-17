@@ -13,14 +13,15 @@ Tiles are saved as:
 
 ```bash
 cargo install geodot
-npm install geodot
+npm install -g @geodot/cli
+npm install @geodot/lib
 pip install geodot
 ```
 
 Run without installing globally:
 
 ```bash
-npx -y geodot -x 37.6504907 -y 55.7303 -z 18 -c 1 -r 1
+npx -y @geodot/cli -x 37.6504907 -y 55.7303 -z 18 -c 1 -r 1
 uvx geodot -x 37.6504907 -y 55.7303 -z 18 -c 1 -r 1
 cargo install geodot && geodot -x 37.6504907 -y 55.7303 -z 18 -c 1 -r 1
 ```
@@ -152,7 +153,7 @@ report = download(DownloadOptions(
 ## JavaScript API
 
 ```js
-import { download, latlonToTile, tileBounds, tileGrid, tileGridBetween, tileGridForPolygon } from 'geodot';
+import { download, latlonToTile, tileBounds, tileGrid, tileGridBetween, tileGridForPolygon } from '@geodot/lib';
 
 const tile = latlonToTile(55.7303, 37.6504907, 18);
 const bounds = tileBounds(tile);

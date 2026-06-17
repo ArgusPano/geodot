@@ -12,7 +12,7 @@ import {
   tileGridBetween,
   tileGridForPolygon,
   tilePath,
-} from "../src/index.js";
+} from "@geodot/lib";
 
 test("latlonToTile converts coordinates", () => {
   assert.deepEqual(latlonToTile(55.7303, 37.6504907, 18), {

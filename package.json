@@ -1,21 +1,9 @@
 {
-  "name": "geodot",
-  "version": "0.1.0",
-  "description": "Download satellite map tiles from the command line or as a JavaScript library",
-  "type": "module",
-  "license": "MIT OR Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ArgusPano/geodot.git"
-  },
-  "bin": {
-    "geodot": "./js/bin/geodot.js"
-  },
-  "exports": "./js/src/index.js",
-  "files": [
-    "js",
-    "README.md"
+  "private": true,
+  "workspaces": [
+    "js/packages/*"
   ],
+  "type": "module",
   "scripts": {
     "format": "prettier --write js package.json eslint.config.js",
     "format:check": "prettier --check js package.json eslint.config.js",

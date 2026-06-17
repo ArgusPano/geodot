@@ -4,7 +4,7 @@ import {
   latlonToTile,
   metersPerPixel,
   tilesForOptions,
-} from "../src/index.js";
+} from "@geodot/lib";
 
 const defaults = {
   lat: 55.7303,

@@ -1,0 +1,23 @@
+{
+  "name": "@geodot/cli",
+  "version": "0.1.0",
+  "description": "Download satellite map tiles from the command line",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArgusPano/geodot.git"
+  },
+  "bin": {
+    "geodot": "./bin/geodot.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "dependencies": {
+    "@geodot/lib": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { download } from "../src/index.js";
+import { download } from "@geodot/lib";
 
 const execFileAsync = promisify(execFile);
 const tileBytes = Buffer.alloc(128, "x");
@@ -81,7 +81,7 @@ test("CLI download writes tiles and manifest", async () => {
     await execFileAsync(
       process.execPath,
       [
-        "js/bin/geodot.js",
+        "js/packages/cli/bin/geodot.js",
         "-x",
         "37.6504907",
         "-y",
