@@ -132,6 +132,8 @@ export async function download(options = {}) {
     rows: 3,
     out: "data",
     jobs: 16,
+    noManifest: false,
+    noDemo: false,
     ...options,
   };
   if (config.geojson && !config.polygon) {
@@ -166,11 +168,136 @@ export async function download(options = {}) {
   await Promise.all(Array.from({ length: Math.max(1, config.jobs) }, worker));
   const report = { center, tiles, failed };
   await mkdir(config.out, { recursive: true });
-  await writeFile(
-    path.join(config.out, "manifest.json"),
-    JSON.stringify(report, null, 2),
-  );
+  if (!config.noManifest) {
+    await writeFile(
+      path.join(config.out, "manifest.json"),
+      JSON.stringify(report, null, 2),
+    );
+  }
+  if (!config.noDemo) {
+    await writeDemo(config.out, report);
+  }
   return report;
+}
+
+async function writeDemo(out, report) {
+  const downloaded = report.tiles;
+  const bounds = downloaded.length
+    ? [
+        [
+          Math.min(...downloaded.map((item) => item.bounds.lon_min)),
+          Math.min(...downloaded.map((item) => item.bounds.lat_min)),
+        ],
+        [
+          Math.max(...downloaded.map((item) => item.bounds.lon_max)),
+          Math.max(...downloaded.map((item) => item.bounds.lat_max)),
+        ],
+      ]
+    : (() => {
+        const tile = tileBounds(report.center);
+        return [
+          [tile.lonMin, tile.latMin],
+          [tile.lonMax, tile.latMax],
+        ];
+      })();
+  const data = JSON.stringify({
+    tiles: downloaded.map((item) => item.tile),
+    bounds,
+    mapCenter: [
+      (bounds[0][0] + bounds[1][0]) / 2,
+      (bounds[0][1] + bounds[1][1]) / 2,
+    ],
+    zoom: downloaded[0]?.tile.z ?? report.center.z,
+    center: report.center,
+  });
+  await writeFile(path.join(out, "index.html"), demoHTML(data));
+}
+
+function demoHTML(data) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>geodot tile overlay demo</title>
+  <link href="https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.css" rel="stylesheet">
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .panel { position: absolute; top: 12px; right: 12px; z-index: 1; display: grid; gap: 8px; padding: 10px; border-radius: 10px; background: rgba(255,255,255,.92); font: 13px system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+    .panel button { border: 0; border-radius: 8px; padding: 8px 10px; background: #1f2937; color: white; cursor: pointer; }
+    .opacity { display: grid; gap: 4px; }
+    .warning { max-width: 260px; color: #92400e; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="panel">
+    <button id="toggle" type="button">Overlay opacity</button>
+    <label id="opacityPanel" class="opacity hidden">Transparency
+      <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.65">
+    </label>
+    <div id="fileWarning" class="warning hidden">
+      Local file mode cannot load tile files. Run geodot demo and open http://127.0.0.1:8000/.
+    </div>
+  </div>
+  <script src="https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.js"></script>
+  <script>
+    const data = ${data};
+    if (location.protocol === 'file:') {
+      document.getElementById('fileWarning').classList.remove('hidden');
+    }
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          satellite: {
+            type: 'raster',
+            tiles: [
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+            ],
+            tileSize: 256,
+            attribution: 'Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+          }
+        },
+        layers: [{ id: 'satellite', type: 'raster', source: 'satellite' }]
+      },
+      center: data.mapCenter,
+      zoom: data.zoom,
+      minZoom: data.zoom,
+      maxZoom: data.zoom,
+      scrollZoom: false,
+      boxZoom: false,
+      doubleClickZoom: false,
+      touchZoomRotate: false,
+      keyboard: false,
+      dragRotate: false,
+      pitchWithRotate: false
+    });
+
+    map.on('load', () => {
+      map.addSource('geodot-tiles', {
+        type: 'raster',
+        tiles: ['./tiles/{z}/{x}/{y}.jpg'],
+        tileSize: 256,
+        minzoom: data.zoom,
+        maxzoom: data.zoom,
+        bounds: [data.bounds[0][0], data.bounds[0][1], data.bounds[1][0], data.bounds[1][1]]
+      });
+      map.addLayer({ id: 'geodot-tiles', type: 'raster', source: 'geodot-tiles', paint: { 'raster-opacity': 0.65 } });
+    });
+
+    document.getElementById('toggle').addEventListener('click', () => {
+      document.getElementById('opacityPanel').classList.toggle('hidden');
+    });
+    document.getElementById('opacity').addEventListener('input', (event) => {
+      if (map.getLayer('geodot-tiles')) map.setPaintProperty('geodot-tiles', 'raster-opacity', Number(event.target.value));
+    });
+  </script>
+</body>
+</html>
+`;
 }
 
 export async function loadGeoJSONPolygon(source) {

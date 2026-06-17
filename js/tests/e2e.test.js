@@ -176,6 +176,16 @@ test("CLI rejects non-numeric jobs", async () => {
   );
 });
 
+test("CLI exposes demo command help", async () => {
+  const { stdout } = await execFileAsync(process.execPath, [
+    "js/packages/cli/bin/geodot.js",
+    "demo",
+    "--help",
+  ]);
+  assert.match(stdout, /geodot demo/);
+  assert.match(stdout, /--no-open/);
+});
+
 test("CLI rejects invalid numeric options", async () => {
   await assert.rejects(
     execFileAsync(process.execPath, [

@@ -155,6 +155,17 @@ def test_cli_download_accepts_geojson_url(tmp_path: Path) -> None:
     assert_download_output(tmp_path)
 
 
+def test_cli_demo_help() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "demo", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--port" in result.stdout
+    assert "--no-open" in result.stdout
+
+
 def test_cli_rejects_invalid_numeric_options() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "geodot.cli", "-j", "https://example.com/area.geojson"],

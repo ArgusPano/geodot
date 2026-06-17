@@ -60,6 +60,8 @@ class DownloadOptions:
     rows: int = 3
     out: str | Path = "data"
     jobs: int = 16
+    no_manifest: bool = False
+    no_demo: bool = False
 
 
 @dataclass(frozen=True)
@@ -214,7 +216,11 @@ def download(options: DownloadOptions | None = None) -> DownloadReport:
             downloaded.append(DownloadedTile(tile=tile, bounds=tile_bounds(tile), path=str(path), bytes=len(data)))
 
     report = DownloadReport(center=center, tiles=downloaded, failed=failed)
-    _write_manifest(Path(options.out), report)
+    out = Path(options.out)
+    if not options.no_manifest:
+        _write_manifest(out, report)
+    if not options.no_demo:
+        _write_demo(out, report)
     return report
 
 
@@ -313,3 +319,130 @@ def _point_in_polygon(point: Coordinate, polygon: list[Coordinate]) -> bool:
 def _write_manifest(out: Path, report: DownloadReport) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "manifest.json").write_text(json.dumps(asdict(report), indent=2), encoding="utf-8")
+
+
+def _write_demo(out: Path, report: DownloadReport) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    tiles = [asdict(item.tile) for item in report.tiles]
+    if report.tiles:
+        min_lon = min(item.bounds.lon_min for item in report.tiles)
+        min_lat = min(item.bounds.lat_min for item in report.tiles)
+        max_lon = max(item.bounds.lon_max for item in report.tiles)
+        max_lat = max(item.bounds.lat_max for item in report.tiles)
+        zoom = report.tiles[0].tile.z
+    else:
+        bounds = tile_bounds(report.center)
+        min_lon, min_lat, max_lon, max_lat = bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max
+        zoom = report.center.z
+    demo_data = json.dumps(
+        {
+            "tiles": tiles,
+            "bounds": [[min_lon, min_lat], [max_lon, max_lat]],
+            "mapCenter": [(min_lon + max_lon) / 2, (min_lat + max_lat) / 2],
+            "zoom": zoom,
+            "center": asdict(report.center),
+        },
+        separators=(",", ":"),
+    )
+    (out / "index.html").write_text(_demo_html(demo_data), encoding="utf-8")
+
+
+def _demo_html(demo_data: str) -> str:
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>geodot tile overlay demo</title>
+  <link href=\"https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.css\" rel=\"stylesheet\">
+  <style>
+    html, body, #map {{ height: 100%; margin: 0; }}
+    .panel {{
+      position: absolute; top: 12px; right: 12px; z-index: 1; display: grid; gap: 8px;
+      padding: 10px; border-radius: 10px; background: rgba(255,255,255,.92);
+      font: 13px system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+    }}
+    .panel button {{
+      border: 0; border-radius: 8px; padding: 8px 10px; background: #1f2937; color: white;
+      cursor: pointer;
+    }}
+    .opacity {{ display: grid; gap: 4px; }}
+    .warning {{ max-width: 260px; color: #92400e; }}
+    .hidden {{ display: none; }}
+  </style>
+</head>
+<body>
+  <div id=\"map\"></div>
+  <div class=\"panel\">
+    <button id=\"toggle\" type=\"button\">Overlay opacity</button>
+    <label id=\"opacityPanel\" class=\"opacity hidden\">Transparency
+      <input id=\"opacity\" type=\"range\" min=\"0\" max=\"1\" step=\"0.05\" value=\"0.65\">
+    </label>
+    <div id=\"fileWarning\" class=\"warning hidden\">
+      Local file mode cannot load tile files. Run geodot demo and open http://127.0.0.1:8000/.
+    </div>
+  </div>
+  <script src=\"https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.js\"></script>
+  <script>
+    const data = {demo_data};
+    if (location.protocol === 'file:') {{
+      document.getElementById('fileWarning').classList.remove('hidden');
+    }}
+    const map = new maplibregl.Map({{
+      container: 'map',
+      style: {{
+        version: 8,
+        sources: {{
+          satellite: {{
+            type: 'raster',
+            tiles: [
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}'
+            ],
+            tileSize: 256,
+            attribution: 'Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+          }}
+        }},
+        layers: [{{ id: 'satellite', type: 'raster', source: 'satellite' }}]
+      }},
+      center: data.mapCenter,
+      zoom: data.zoom,
+      minZoom: data.zoom,
+      maxZoom: data.zoom,
+      scrollZoom: false,
+      boxZoom: false,
+      doubleClickZoom: false,
+      touchZoomRotate: false,
+      keyboard: false,
+      dragRotate: false,
+      pitchWithRotate: false
+    }});
+
+    map.on('load', () => {{
+      map.addSource('geodot-tiles', {{
+        type: 'raster',
+        tiles: ['./tiles/{{z}}/{{x}}/{{y}}.jpg'],
+        tileSize: 256,
+        minzoom: data.zoom,
+        maxzoom: data.zoom,
+        bounds: [data.bounds[0][0], data.bounds[0][1], data.bounds[1][0], data.bounds[1][1]]
+      }});
+      map.addLayer({{
+        id: 'geodot-tiles',
+        type: 'raster',
+        source: 'geodot-tiles',
+        paint: {{ 'raster-opacity': 0.65 }}
+      }});
+    }});
+
+    document.getElementById('toggle').addEventListener('click', () => {{
+      document.getElementById('opacityPanel').classList.toggle('hidden');
+    }});
+    document.getElementById('opacity').addEventListener('input', (event) => {{
+      if (map.getLayer('geodot-tiles')) {{
+        map.setPaintProperty('geodot-tiles', 'raster-opacity', Number(event.target.value));
+      }}
+    }});
+  </script>
+</body>
+</html>
+"""

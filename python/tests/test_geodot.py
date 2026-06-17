@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from pathlib import Path
 
+import geodot.core as core
 import pytest
 from geodot import (
     Coordinate,
@@ -106,3 +107,28 @@ def test_download_rejects_invalid_numeric_options() -> None:
         download(DownloadOptions(cols=0))
     with pytest.raises(ValueError, match="zoom must be an integer 0 to 30"):
         download(DownloadOptions(zoom=31))
+
+
+def test_download_can_skip_manifest_and_writes_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(core, "_download_tile", lambda tile: b"x" * 128)
+
+    report = download(DownloadOptions(cols=1, rows=1, jobs=1, out=tmp_path, no_manifest=True))
+
+    assert len(report.tiles) == 1
+    assert not (tmp_path / "manifest.json").exists()
+    demo = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "maplibregl.Map" in demo
+    assert "World_Imagery" in demo
+    assert "./tiles/{z}/{x}/{y}.jpg" in demo
+    assert "%7Bz%7D" not in demo
+    assert "minZoom: data.zoom" in demo
+    assert "fitBounds" not in demo
+
+
+def test_download_can_skip_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(core, "_download_tile", lambda tile: b"x" * 128)
+
+    download(DownloadOptions(cols=1, rows=1, jobs=1, out=tmp_path, no_demo=True))
+
+    assert (tmp_path / "manifest.json").exists()
+    assert not (tmp_path / "index.html").exists()

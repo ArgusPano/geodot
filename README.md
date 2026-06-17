@@ -7,6 +7,7 @@ Tiles are saved as:
 ```text
 {out}/tiles/{z}/{x}/{y}.jpg
 {out}/manifest.json
+{out}/index.html
 ```
 
 ## Install
@@ -76,6 +77,8 @@ geodot --geojson https://example.com/area.geojson -z 18 -o data
 | `-r`, `--rows` | `3` | Tile rows downward from the top-left tile |
 | `-o`, `--out` | `data` | Output directory |
 | `-j`, `--jobs` | `16` | Concurrent downloads |
+| `--no-manifest` | off | Do not write `manifest.json` |
+| `--no-demo` | off | Do not write `index.html` |
 
 ## Output
 
@@ -84,6 +87,7 @@ For `-o data`, a 3 by 3 download at zoom 18 writes files like this:
 ```text
 data/
 ├── manifest.json
+├── index.html
 └── tiles/
     └── 18/
         └── 158488/
@@ -92,7 +96,15 @@ data/
 
 JPEG bytes are written directly from the tile server without re-compression.
 
-Tile images are always 256x256 pixels. `geodot` does not currently support other tile sizes.
+Run `geodot demo` to inspect the downloaded tiles as a MapLibre raster overlay on a satellite base map at their tile coordinates and zoom. The demo serves `{out}/index.html` and reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg`; it does not depend on `manifest.json`. Use the corner opacity control to compare the overlay against the base map. Zooming is disabled because the output folder only contains the downloaded zoom level.
+
+Do not open `index.html` with `file://`; browsers block local tile loading from file origins. Serve the output folder instead:
+
+```bash
+geodot demo
+```
+
+Then open `http://127.0.0.1:8000/`. Use `geodot demo -o other-dir` for a different output folder. Pass `--no-manifest` when you only want tiles and the demo, or `--no-demo` when you only want tiles and `manifest.json`.
 
 `manifest.json` contains:
 
@@ -155,6 +167,8 @@ report = download(DownloadOptions(
     out="data",
     jobs=16,
     geojson=None,
+    no_manifest=False,
+    no_demo=False,
 ))
 ```
 
@@ -185,6 +199,8 @@ const report = await download({
   out: 'data',
   jobs: 16,
   geojson: undefined,
+  noManifest: false,
+  noDemo: false,
 });
 ```
 
@@ -219,6 +235,8 @@ async fn main() -> anyhow::Result<()> {
         jobs: 16,
         geojson: None,
         tile_url_template: None,
+        no_manifest: false,
+        no_demo: false,
     })
     .await?;
 

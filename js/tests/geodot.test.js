@@ -110,12 +110,68 @@ test("download manifest includes per-tile bounds", async () => {
     const manifest = JSON.parse(
       await readFile(path.join(out, "manifest.json"), "utf8"),
     );
+    const demo = await readFile(path.join(out, "index.html"), "utf8");
     assert.deepEqual(Object.keys(manifest.tiles[0].bounds).sort(), [
       "lat_max",
       "lat_min",
       "lon_max",
       "lon_min",
     ]);
+    assert.match(demo, /maplibregl\.Map/);
+    assert.match(demo, /World_Imagery/);
+    assert.match(demo, /\.\/tiles\/\{z\}\/\{x\}\/\{y\}\.jpg/);
+    assert.doesNotMatch(demo, /%7Bz%7D/);
+    assert.match(demo, /minZoom: data\.zoom/);
+    assert.doesNotMatch(demo, /fitBounds/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("download can skip manifest and still write demo", async () => {
+  const originalFetch = globalThis.fetch;
+  const out = await mkdtemp(path.join(tmpdir(), "geodot-"));
+  globalThis.fetch = async () => new Response(Buffer.alloc(128));
+  try {
+    await download({
+      lat: 55.7303,
+      lon: 37.6504907,
+      zoom: 18,
+      cols: 1,
+      rows: 1,
+      out,
+      jobs: 1,
+      noManifest: true,
+    });
+    await assert.rejects(() =>
+      readFile(path.join(out, "manifest.json"), "utf8"),
+    );
+    const demo = await readFile(path.join(out, "index.html"), "utf8");
+    assert.match(demo, /maplibregl\.Map/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("download can skip demo", async () => {
+  const originalFetch = globalThis.fetch;
+  const out = await mkdtemp(path.join(tmpdir(), "geodot-"));
+  globalThis.fetch = async () => new Response(Buffer.alloc(128));
+  try {
+    await download({
+      lat: 55.7303,
+      lon: 37.6504907,
+      zoom: 18,
+      cols: 1,
+      rows: 1,
+      out,
+      jobs: 1,
+      noDemo: true,
+    });
+    await readFile(path.join(out, "manifest.json"), "utf8");
+    await assert.rejects(() => readFile(path.join(out, "index.html"), "utf8"));
   } finally {
     globalThis.fetch = originalFetch;
     await rm(out, { recursive: true, force: true });

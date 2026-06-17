@@ -5,7 +5,17 @@ use geodot::{
     tiles_for_options, validate_options,
 };
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 use std::time::Instant;
+use std::{fs, io::Write, net::TcpListener};
+
+const EMPTY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x64, 0xF8, 0xCF, 0x50,
+    0x0F, 0x00, 0x03, 0x86, 0x01, 0x80, 0x5A, 0x34, 0x7D, 0x6B, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
 
 #[derive(Parser, Debug)]
 #[command(
@@ -57,10 +67,49 @@ struct Args {
     /// Max concurrent downloads
     #[arg(short = 'j', long, default_value = "16", value_parser = parse_positive_usize)]
     jobs: usize,
+
+    /// Do not write manifest.json
+    #[arg(long)]
+    no_manifest: bool,
+
+    /// Do not write index.html
+    #[arg(long)]
+    no_demo: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "geodot demo",
+    about = "Serve a geodot output directory for the HTML demo."
+)]
+struct DemoArgs {
+    /// Output directory to serve
+    #[arg(short, long, default_value = "data")]
+    out: PathBuf,
+
+    /// Host to bind
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+
+    /// Port to bind
+    #[arg(long, default_value = "8000", value_parser = parse_positive_u16)]
+    port: u16,
+
+    /// Do not open the browser
+    #[arg(long)]
+    no_open: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut raw_args = std::env::args();
+    let program = raw_args.next().unwrap_or_else(|| "geodot".to_string());
+    if raw_args.next().as_deref() == Some("demo") {
+        let args = std::iter::once(format!("{program} demo")).chain(raw_args);
+        serve_demo(DemoArgs::parse_from(args))?;
+        return Ok(());
+    }
+
     let args = Args::parse();
     let start = Instant::now();
     let polygon = match (args.polygon, args.geojson.as_deref()) {
@@ -81,6 +130,8 @@ async fn main() -> Result<()> {
         out: args.out,
         jobs: args.jobs,
         tile_url_template: None,
+        no_manifest: args.no_manifest,
+        no_demo: args.no_demo,
     };
     validate_options(&options)?;
     let center = geodot::latlon_to_tile(options.lat, options.lon, options.zoom);
@@ -126,6 +177,120 @@ async fn main() -> Result<()> {
         report.failed.len()
     );
     Ok(())
+}
+
+fn serve_demo(args: DemoArgs) -> Result<()> {
+    let root = args.out.canonicalize().unwrap_or(args.out.clone());
+    let listener = TcpListener::bind((args.host.as_str(), args.port))?;
+    let url = format!("http://{}:{}/", args.host, args.port);
+    println!("Serving {} at {url}", root.display());
+    if !args.no_open {
+        open_browser(&url);
+    }
+    for stream in listener.incoming() {
+        let mut stream = stream?;
+        let mut buffer = [0; 2048];
+        let size = std::io::Read::read(&mut stream, &mut buffer)?;
+        let request = String::from_utf8_lossy(&buffer[..size]);
+        let path = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or("/");
+        let path = percent_decode(path.split('?').next().unwrap_or("/"));
+        let relative = if path == "/" {
+            "index.html"
+        } else {
+            path.trim_start_matches('/')
+        };
+        if relative.split('/').any(|part| part == "..") {
+            write_response(&mut stream, "403 Forbidden", "text/plain", b"Forbidden")?;
+            continue;
+        }
+        let file = root.join(relative);
+        if !file.starts_with(&root) {
+            write_response(&mut stream, "403 Forbidden", "text/plain", b"Forbidden")?;
+            continue;
+        }
+        match fs::read(&file) {
+            Ok(bytes) if file.is_file() => {
+                write_response(&mut stream, "200 OK", content_type(&file), &bytes)?
+            }
+            _ => {
+                if relative.starts_with("tiles/") && relative.ends_with(".jpg") {
+                    write_response(&mut stream, "200 OK", "image/png", EMPTY_PNG)?
+                } else {
+                    write_response(&mut stream, "404 Not Found", "text/plain", b"Not found")?
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_response(
+    stream: &mut std::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(body)?;
+    Ok(())
+}
+
+fn content_type(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(hex) = u8::from_str_radix(&value[index + 1..index + 3], 16)
+        {
+            decoded.push(hex);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = ProcessCommand::new("open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = ProcessCommand::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    };
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut command = {
+        let mut command = ProcessCommand::new("xdg-open");
+        command.arg(url);
+        command
+    };
+    let _ = command.spawn();
 }
 
 fn parse_polygon(value: &str) -> std::result::Result<Vec<Coordinate>, String> {
@@ -177,6 +342,16 @@ fn parse_positive_u32(value: &str) -> std::result::Result<u32, String> {
 
 fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
     let number: usize = value
+        .parse()
+        .map_err(|_| format!("invalid integer: {value}"))?;
+    if number == 0 {
+        return Err("must be at least 1".to_string());
+    }
+    Ok(number)
+}
+
+fn parse_positive_u16(value: &str) -> std::result::Result<u16, String> {
+    let number: u16 = value
         .parse()
         .map_err(|_| format!("invalid integer: {value}"))?;
     if number == 0 {

@@ -133,6 +133,92 @@ fn cli_accepts_geojson_url() {
 }
 
 #[test]
+fn cli_can_skip_manifest_and_still_write_demo() {
+    let (template, server) = tile_server(1);
+    let out = temp_dir("geodot-cli-no-manifest");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .env("GEODOT_TILE_URL_TEMPLATE", &template)
+        .args([
+            "-x",
+            "37.6504907",
+            "-y",
+            "55.7303",
+            "-z",
+            "18",
+            "-c",
+            "1",
+            "-r",
+            "1",
+            "-j",
+            "1",
+            "-o",
+            out.to_str().unwrap(),
+            "--no-manifest",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!out.join("manifest.json").exists());
+    let demo = fs::read_to_string(out.join("index.html")).unwrap();
+    assert!(demo.contains("maplibregl.Map"));
+    assert!(demo.contains("World_Imagery"));
+    assert!(demo.contains("./tiles/{z}/{x}/{y}.jpg"));
+    assert!(!demo.contains("%7Bz%7D"));
+    assert!(demo.contains("minZoom: data.zoom"));
+    assert!(!demo.contains("fitBounds"));
+
+    server.join().unwrap();
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn cli_can_skip_demo() {
+    let (template, server) = tile_server(1);
+    let out = temp_dir("geodot-cli-no-demo");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .env("GEODOT_TILE_URL_TEMPLATE", &template)
+        .args([
+            "-x",
+            "37.6504907",
+            "-y",
+            "55.7303",
+            "-z",
+            "18",
+            "-c",
+            "1",
+            "-r",
+            "1",
+            "-j",
+            "1",
+            "-o",
+            out.to_str().unwrap(),
+            "--no-demo",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(out.join("manifest.json").exists());
+    assert!(!out.join("index.html").exists());
+
+    server.join().unwrap();
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn cli_exposes_demo_command_help() {
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .args(["demo", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--port"));
+    assert!(stdout.contains("--no-open"));
+}
+
+#[test]
 fn cli_rejects_invalid_numeric_options() {
     let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
         .args(["-j", "https://example.com/area.geojson"])
@@ -182,6 +268,14 @@ fn tile_server(requests: usize) -> (String, thread::JoinHandle<()>) {
 }
 
 fn assert_download_output(out: &Path) {
+    let demo = fs::read_to_string(out.join("index.html")).unwrap();
+    assert!(demo.contains("maplibregl.Map"));
+    assert!(demo.contains("World_Imagery"));
+    assert!(demo.contains("./tiles/{z}/{x}/{y}.jpg"));
+    assert!(!demo.contains("%7Bz%7D"));
+    assert!(demo.contains("minZoom: data.zoom"));
+    assert!(!demo.contains("fitBounds"));
+
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();
     let tile = &manifest["tiles"][0];

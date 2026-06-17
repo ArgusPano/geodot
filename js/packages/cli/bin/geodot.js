@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { createServer } from "node:http";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { URL } from "node:url";
+
+const EMPTY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
 import {
   download,
   latlonToTile,
@@ -19,6 +30,8 @@ const defaults = {
   rows: 3,
   out: "data",
   jobs: 16,
+  noManifest: false,
+  noDemo: false,
 };
 
 const flags = {
@@ -46,6 +59,11 @@ const flags = {
   "--jobs": "jobs",
 };
 
+const booleanFlags = {
+  "--no-manifest": "noManifest",
+  "--no-demo": "noDemo",
+};
+
 const integerOptions = new Set(["zoom", "cols", "rows", "jobs"]);
 const ranges = {
   zoom: [0, 30],
@@ -56,10 +74,16 @@ const ranges = {
 
 function parseArgs(argv) {
   const options = { ...defaults };
-  for (let i = 0; i < argv.length; i += 2) {
+  for (let i = 0; i < argv.length; ) {
     if (argv[i] === "-h" || argv[i] === "--help") {
       usage();
       process.exit(0);
+    }
+    const booleanKey = booleanFlags[argv[i]];
+    if (booleanKey) {
+      options[booleanKey] = true;
+      i += 1;
+      continue;
     }
     const key = flags[argv[i]];
     if (!key || argv[i + 1] === undefined) {
@@ -90,6 +114,7 @@ function parseArgs(argv) {
       }
       options[key] = value;
     }
+    i += 2;
   }
   return options;
 }
@@ -112,38 +137,143 @@ function parsePolygon(value) {
 
 function usage() {
   console.log(
-    'Usage: geodot [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs]',
+    'Usage: geodot [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--no-manifest] [--no-demo]\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
   );
 }
 
-const options = parseArgs(process.argv.slice(2));
-if (options.geojson && !options.polygon) {
-  options.polygon = await loadGeoJSONPolygon(options.geojson);
+function parseDemoArgs(argv) {
+  const options = { out: "data", host: "127.0.0.1", port: 8000, open: true };
+  for (let i = 0; i < argv.length; ) {
+    if (argv[i] === "-h" || argv[i] === "--help") {
+      usage();
+      process.exit(0);
+    }
+    if (argv[i] === "--no-open") {
+      options.open = false;
+      i += 1;
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined) {
+      usage();
+      process.exit(1);
+    }
+    if (argv[i] === "-o" || argv[i] === "--out") {
+      options.out = value;
+    } else if (argv[i] === "--host") {
+      options.host = value;
+    } else if (argv[i] === "--port") {
+      options.port = Number(value);
+      if (!Number.isInteger(options.port) || options.port < 1) {
+        console.error(`${argv[i]} requires a positive integer, got ${value}`);
+        process.exit(1);
+      }
+    } else {
+      usage();
+      process.exit(1);
+    }
+    i += 2;
+  }
+  return options;
 }
-const start = performance.now();
-const center = latlonToTile(options.lat, options.lon, options.zoom);
-const selectedTiles = tilesForOptions(options);
 
-console.log("\n  geodot - satellite tiles");
-console.log("  -------------------------------------");
-console.log(`  Top-left: ${options.lat} ${options.lon}`);
-console.log(`  Tile:     (${center.x}, ${center.y})  at zoom ${options.zoom}`);
-console.log(`  Tiles:    ${selectedTiles.length}`);
-console.log(
-  `  m/px:     ${metersPerPixel(options.lat, options.zoom).toFixed(2)}`,
-);
-console.log(`  Output:   ${options.out}\n`);
+function serveDemo(options) {
+  const root = path.resolve(options.out);
+  const server = createServer(async (request, response) => {
+    const url = new URL(
+      request.url ?? "/",
+      `http://${options.host}:${options.port}`,
+    );
+    const decoded = decodeURIComponent(url.pathname);
+    const requested = decoded === "/" ? "/index.html" : decoded;
+    const file = path.resolve(root, `.${requested}`);
+    if (!file.startsWith(`${root}${path.sep}`) && file !== root) {
+      response.writeHead(403);
+      response.end("Forbidden");
+      return;
+    }
+    try {
+      const info = await stat(file);
+      if (!info.isFile()) throw new Error("not a file");
+      response.writeHead(200, { "Content-Type": contentType(file) });
+      createReadStream(file).pipe(response);
+    } catch {
+      if (decoded.startsWith("/tiles/") && decoded.endsWith(".jpg")) {
+        response.writeHead(200, {
+          "Content-Type": "image/png",
+          "Content-Length": EMPTY_PNG.length,
+        });
+        response.end(EMPTY_PNG);
+      } else {
+        response.writeHead(404);
+        response.end("Not found");
+      }
+    }
+  });
+  server.listen(options.port, options.host, () => {
+    const url = `http://${options.host}:${options.port}/`;
+    console.log(`Serving ${root} at ${url}`);
+    if (options.open) openBrowser(url);
+  });
+}
 
-const report = await download(options);
-for (const item of report.tiles) {
+function contentType(file) {
+  if (file.endsWith(".html")) return "text/html; charset=utf-8";
+  if (file.endsWith(".jpg") || file.endsWith(".jpeg")) return "image/jpeg";
+  if (file.endsWith(".json")) return "application/json";
+  return "application/octet-stream";
+}
+
+function openBrowser(url) {
+  const command =
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "cmd"
+        : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.unref();
+}
+
+async function runDownload() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.geojson && !options.polygon) {
+    options.polygon = await loadGeoJSONPolygon(options.geojson);
+  }
+  const start = performance.now();
+  const center = latlonToTile(options.lat, options.lon, options.zoom);
+  const selectedTiles = tilesForOptions(options);
+
+  console.log("\n  geodot - satellite tiles");
+  console.log("  -------------------------------------");
+  console.log(`  Top-left: ${options.lat} ${options.lon}`);
   console.log(
-    `  (${item.tile.x},${item.tile.y})  ${String(item.bytes).padStart(6)} B  ${item.path}`,
+    `  Tile:     (${center.x}, ${center.y})  at zoom ${options.zoom}`,
+  );
+  console.log(`  Tiles:    ${selectedTiles.length}`);
+  console.log(
+    `  m/px:     ${metersPerPixel(options.lat, options.zoom).toFixed(2)}`,
+  );
+  console.log(`  Output:   ${options.out}\n`);
+
+  const report = await download(options);
+  for (const item of report.tiles) {
+    console.log(
+      `  (${item.tile.x},${item.tile.y})  ${String(item.bytes).padStart(6)} B  ${item.path}`,
+    );
+  }
+  for (const tile of report.failed) {
+    console.log(`  (${tile.x},${tile.y})  FAILED`);
+  }
+  console.log("\n  -------------------------------------");
+  console.log(
+    `  ${report.tiles.length} tiles  |  ${((performance.now() - start) / 1000).toFixed(1)}s  |  failed: ${report.failed.length}`,
   );
 }
-for (const tile of report.failed) {
-  console.log(`  (${tile.x},${tile.y})  FAILED`);
+
+if (process.argv[2] === "demo") {
+  serveDemo(parseDemoArgs(process.argv.slice(3)));
+} else {
+  await runDownload();
 }
-console.log("\n  -------------------------------------");
-console.log(
-  `  ${report.tiles.length} tiles  |  ${((performance.now() - start) / 1000).toFixed(1)}s  |  failed: ${report.failed.length}`,
-);

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import math
+import os
+import sys
 import time
+import webbrowser
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from .core import (
     Coordinate,
@@ -16,6 +22,10 @@ from .core import (
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "demo":
+        _demo(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(description="Download satellite map tiles (256x256 px).")
     parser.add_argument("-y", "--lat", type=_finite_float, default=55.7303, help="top-left latitude")
     parser.add_argument("-x", "--lon", type=_finite_float, default=37.6504907, help="top-left longitude")
@@ -32,6 +42,8 @@ def main() -> None:
     parser.add_argument("-r", "--rows", type=_positive_int, default=3, help="tile rows downward from center")
     parser.add_argument("-o", "--out", default="data", help="output directory")
     parser.add_argument("-j", "--jobs", type=_positive_int, default=16, help="max concurrent downloads")
+    parser.add_argument("--no-manifest", action="store_true", help="do not write manifest.json")
+    parser.add_argument("--no-demo", action="store_true", help="do not write index.html")
     args = parser.parse_args()
 
     start = time.perf_counter()
@@ -54,6 +66,44 @@ def main() -> None:
 
     print("\n  -------------------------------------")
     print(f"  {len(report.tiles)} tiles  |  {time.perf_counter() - start:.1f}s  |  failed: {len(report.failed)}")
+
+
+_EMPTY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _demo(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(description="Serve a geodot output directory for the HTML demo.")
+    parser.add_argument("-o", "--out", default="data", help="output directory to serve")
+    parser.add_argument("--host", default="127.0.0.1", help="host to bind")
+    parser.add_argument("--port", type=_positive_int, default=8000, help="port to bind")
+    parser.add_argument("--no-open", action="store_true", help="do not open the browser")
+    args = parser.parse_args(argv)
+
+    class _Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *handler_args, **kwargs):
+            super().__init__(*handler_args, directory=args.out, **kwargs)
+
+        def send_head(self):
+            path = self.translate_path(self.path)
+            if not os.path.exists(path) and "/tiles/" in self.path and self.path.endswith(".jpg"):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(_EMPTY_PNG)))
+                self.end_headers()
+                return io.BytesIO(_EMPTY_PNG)
+            return super().send_head()
+
+    server = ThreadingHTTPServer((args.host, args.port), _Handler)
+    url = f"http://{args.host}:{args.port}/"
+    print(f"Serving {args.out} at {url}")
+    if not args.no_open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
 
 
 def _parse_polygon(value: str) -> list[Coordinate]:
