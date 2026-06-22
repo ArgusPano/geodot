@@ -13,11 +13,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from .core import (
     Coordinate,
     DownloadOptions,
+    count_tiles_for_options,
     download,
     latlon_to_tile,
     meters_per_pixel,
     resolve_options,
-    tiles_for_options,
 )
 
 
@@ -49,12 +49,12 @@ def main() -> None:
     start = time.perf_counter()
     options = resolve_options(DownloadOptions(**vars(args)))
     center = latlon_to_tile(args.lat, args.lon, args.zoom)
-    selected_tiles = tiles_for_options(options)
+    selected_tile_count = count_tiles_for_options(options)
     print("\n  geodot - satellite tiles")
     print("  -------------------------------------")
     print(f"  Top-left: {args.lat} {args.lon}")
     print(f"  Tile:    ({center.x}, {center.y})  at zoom {args.zoom}")
-    print(f"  Tiles:   {len(selected_tiles)}")
+    print(f"  Tiles:   {selected_tile_count}")
     print(f"  m/px:    {meters_per_pixel(args.lat, args.zoom):.2f}")
     print(f"  Output:  {args.out}\n")
 

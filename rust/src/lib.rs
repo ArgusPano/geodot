@@ -130,16 +130,7 @@ pub fn meters_per_pixel(lat: f64, z: u32) -> f64 {
 }
 
 pub fn tile_grid(lat: f64, lon: f64, zoom: u32, cols: u32, rows: u32) -> Vec<Tile> {
-    let center = latlon_to_tile(lat, lon, zoom);
-    (0..rows)
-        .flat_map(|row| {
-            (0..cols).map(move |col| Tile {
-                x: center.x + col,
-                y: center.y + row,
-                z: zoom,
-            })
-        })
-        .collect()
+    tile_grid_iter(lat, lon, zoom, cols, rows).collect()
 }
 
 pub fn tile_grid_between(
@@ -151,12 +142,51 @@ pub fn tile_grid_between(
 ) -> Vec<Tile> {
     let a = latlon_to_tile(top_left_lat, top_left_lon, zoom);
     let b = latlon_to_tile(bottom_right_lat, bottom_right_lon, zoom);
-    tiles_in_range(a.x.min(b.x), a.x.max(b.x), a.y.min(b.y), a.y.max(b.y), zoom)
+    tiles_in_range(a.x.min(b.x), a.x.max(b.x), a.y.min(b.y), a.y.max(b.y), zoom).collect()
 }
 
 pub fn tile_grid_for_polygon(points: &[Coordinate], zoom: u32) -> Vec<Tile> {
+    tile_grid_for_polygon_iter(points, zoom).collect()
+}
+
+pub fn tiles_for_options(options: &DownloadOptions) -> Vec<Tile> {
+    tile_iter_for_options(options).collect()
+}
+
+pub fn count_tiles_for_options(options: &DownloadOptions) -> usize {
+    tile_iter_for_options(options).count()
+}
+
+fn tile_iter_for_options(options: &DownloadOptions) -> Box<dyn Iterator<Item = Tile> + '_> {
+    if options.polygon.len() >= 3 {
+        return tile_grid_for_polygon_iter(&options.polygon, options.zoom);
+    }
+    if let (Some(lat2), Some(lon2)) = (options.bottom_right_lat, options.bottom_right_lon) {
+        let a = latlon_to_tile(options.lat, options.lon, options.zoom);
+        let b = latlon_to_tile(lat2, lon2, options.zoom);
+        return Box::new(tiles_in_range(
+            a.x.min(b.x),
+            a.x.max(b.x),
+            a.y.min(b.y),
+            a.y.max(b.y),
+            options.zoom,
+        ));
+    }
+    Box::new(tile_grid_iter(
+        options.lat,
+        options.lon,
+        options.zoom,
+        options.cols,
+        options.rows,
+    ))
+}
+
+fn tile_grid_for_polygon_iter(
+    points: &[Coordinate],
+    zoom: u32,
+) -> Box<dyn Iterator<Item = Tile> + '_> {
     if points.len() < 3 {
-        return Vec::new();
+        return Box::new(std::iter::empty());
     }
     let min_lat = points.iter().map(|p| p.lat).fold(f64::INFINITY, f64::min);
     let max_lat = points
@@ -168,25 +198,11 @@ pub fn tile_grid_for_polygon(points: &[Coordinate], zoom: u32) -> Vec<Tile> {
         .iter()
         .map(|p| p.lon)
         .fold(f64::NEG_INFINITY, f64::max);
-    tile_grid_between(max_lat, min_lon, min_lat, max_lon, zoom)
-        .into_iter()
-        .filter(|tile| tile_intersects_polygon(*tile, points))
-        .collect()
-}
-
-pub fn tiles_for_options(options: &DownloadOptions) -> Vec<Tile> {
-    if options.polygon.len() >= 3 {
-        return tile_grid_for_polygon(&options.polygon, options.zoom);
-    }
-    if let (Some(lat2), Some(lon2)) = (options.bottom_right_lat, options.bottom_right_lon) {
-        return tile_grid_between(options.lat, options.lon, lat2, lon2, options.zoom);
-    }
-    tile_grid(
-        options.lat,
-        options.lon,
-        options.zoom,
-        options.cols,
-        options.rows,
+    let a = latlon_to_tile(max_lat, min_lon, zoom);
+    let b = latlon_to_tile(min_lat, max_lon, zoom);
+    Box::new(
+        tiles_in_range(a.x.min(b.x), a.x.max(b.x), a.y.min(b.y), a.y.max(b.y), zoom)
+            .filter(move |tile| tile_intersects_polygon(*tile, points)),
     )
 }
 
@@ -301,7 +317,6 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
     }
     validate_options(&options)?;
     let center = latlon_to_tile(options.lat, options.lon, options.zoom);
-    let tiles = tiles_for_options(&options);
     let client = Arc::new(
         reqwest::Client::builder()
             .user_agent(random_ua())
@@ -317,7 +332,7 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
             .or_else(|| env::var(TILE_URL_TEMPLATE_ENV).ok()),
     );
 
-    let results: Vec<_> = stream::iter(tiles)
+    let mut downloads = stream::iter(tile_iter_for_options(&options))
         .map(|tile| {
             let client = client.clone();
             let tile_url_template = tile_url_template.clone();
@@ -326,13 +341,11 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
                 (tile, data)
             }
         })
-        .buffer_unordered(options.jobs.max(1))
-        .collect()
-        .await;
+        .buffer_unordered(options.jobs.max(1));
 
     let mut downloaded = Vec::new();
     let mut failed = Vec::new();
-    for (tile, data) in results {
+    while let Some((tile, data)) = downloads.next().await {
         match data {
             Some(bytes) => {
                 let path = tile_path(&options.out, tile);
@@ -365,10 +378,31 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
     Ok(report)
 }
 
-fn tiles_in_range(min_x: u32, max_x: u32, min_y: u32, max_y: u32, z: u32) -> Vec<Tile> {
-    (min_y..=max_y)
-        .flat_map(|y| (min_x..=max_x).map(move |x| Tile { x, y, z }))
-        .collect()
+fn tile_grid_iter(
+    lat: f64,
+    lon: f64,
+    zoom: u32,
+    cols: u32,
+    rows: u32,
+) -> impl Iterator<Item = Tile> {
+    let center = latlon_to_tile(lat, lon, zoom);
+    (0..rows).flat_map(move |row| {
+        (0..cols).map(move |col| Tile {
+            x: center.x + col,
+            y: center.y + row,
+            z: zoom,
+        })
+    })
+}
+
+fn tiles_in_range(
+    min_x: u32,
+    max_x: u32,
+    min_y: u32,
+    max_y: u32,
+    z: u32,
+) -> impl Iterator<Item = Tile> {
+    (min_y..=max_y).flat_map(move |y| (min_x..=max_x).map(move |x| Tile { x, y, z }))
 }
 
 fn find_polygon_geometry(value: &serde_json::Value) -> Option<&serde_json::Value> {

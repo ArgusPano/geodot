@@ -12,10 +12,10 @@ const EMPTY_PNG = Buffer.from(
 );
 import {
   download,
+  countTilesForOptions,
   latlonToTile,
   loadGeoJSONPolygon,
   metersPerPixel,
-  tilesForOptions,
 } from "@geodot/lib";
 
 const defaults = {
@@ -243,7 +243,7 @@ async function runDownload() {
   }
   const start = performance.now();
   const center = latlonToTile(options.lat, options.lon, options.zoom);
-  const selectedTiles = tilesForOptions(options);
+  const selectedTileCount = countTilesForOptions(options);
 
   console.log("\n  geodot - satellite tiles");
   console.log("  -------------------------------------");
@@ -251,7 +251,7 @@ async function runDownload() {
   console.log(
     `  Tile:     (${center.x}, ${center.y})  at zoom ${options.zoom}`,
   );
-  console.log(`  Tiles:    ${selectedTiles.length}`);
+  console.log(`  Tiles:    ${selectedTileCount}`);
   console.log(
     `  m/px:     ${metersPerPixel(options.lat, options.zoom).toFixed(2)}`,
   );

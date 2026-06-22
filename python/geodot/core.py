@@ -5,7 +5,8 @@ import math
 import os
 import random
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -101,8 +102,7 @@ def meters_per_pixel(lat: float, z: int) -> float:
 
 
 def tile_grid(lat: float, lon: float, zoom: int, cols: int, rows: int) -> list[Tile]:
-    center = latlon_to_tile(lat, lon, zoom)
-    return [Tile(center.x + col, center.y + row, zoom) for row in range(rows) for col in range(cols)]
+    return list(_tile_grid_iter(lat, lon, zoom, cols, rows))
 
 
 def tile_grid_between(
@@ -114,33 +114,65 @@ def tile_grid_between(
 ) -> list[Tile]:
     first = latlon_to_tile(top_left_lat, top_left_lon, zoom)
     second = latlon_to_tile(bottom_right_lat, bottom_right_lon, zoom)
-    return _tiles_in_range(
-        min(first.x, second.x), max(first.x, second.x), min(first.y, second.y), max(first.y, second.y), zoom
+    return list(
+        _tiles_in_range(
+            min(first.x, second.x),
+            max(first.x, second.x),
+            min(first.y, second.y),
+            max(first.y, second.y),
+            zoom,
+        )
     )
 
 
 def tile_grid_for_polygon(points: list[Coordinate], zoom: int) -> list[Tile]:
+    return list(_tile_grid_for_polygon_iter(points, zoom))
+
+
+def tiles_for_options(options: DownloadOptions) -> list[Tile]:
+    return list(tile_iter_for_options(options))
+
+
+def count_tiles_for_options(options: DownloadOptions) -> int:
+    return sum(1 for _tile in tile_iter_for_options(options))
+
+
+def tile_iter_for_options(options: DownloadOptions) -> Iterator[Tile]:
+    if options.polygon and len(options.polygon) >= 3:
+        return _tile_grid_for_polygon_iter(options.polygon, options.zoom)
+    if options.bottom_right_lat is not None and options.bottom_right_lon is not None:
+        first = latlon_to_tile(options.lat, options.lon, options.zoom)
+        second = latlon_to_tile(options.bottom_right_lat, options.bottom_right_lon, options.zoom)
+        return _tiles_in_range(
+            min(first.x, second.x),
+            max(first.x, second.x),
+            min(first.y, second.y),
+            max(first.y, second.y),
+            options.zoom,
+        )
+    return _tile_grid_iter(options.lat, options.lon, options.zoom, options.cols, options.rows)
+
+
+def _tile_grid_for_polygon_iter(points: list[Coordinate], zoom: int) -> Iterator[Tile]:
     if len(points) < 3:
-        return []
+        return iter(())
     min_lat = min(point.lat for point in points)
     max_lat = max(point.lat for point in points)
     min_lon = min(point.lon for point in points)
     max_lon = max(point.lon for point in points)
-    return [
+    first = latlon_to_tile(max_lat, min_lon, zoom)
+    second = latlon_to_tile(min_lat, max_lon, zoom)
+    return (
         tile
-        for tile in tile_grid_between(max_lat, min_lon, min_lat, max_lon, zoom)
-        if _tile_intersects_polygon(tile, points)
-    ]
-
-
-def tiles_for_options(options: DownloadOptions) -> list[Tile]:
-    if options.polygon and len(options.polygon) >= 3:
-        return tile_grid_for_polygon(options.polygon, options.zoom)
-    if options.bottom_right_lat is not None and options.bottom_right_lon is not None:
-        return tile_grid_between(
-            options.lat, options.lon, options.bottom_right_lat, options.bottom_right_lon, options.zoom
+        for tile in _tiles_in_range(
+            min(first.x, second.x),
+            max(first.x, second.x),
+            min(first.y, second.y),
+            max(first.y, second.y),
+            zoom,
         )
-    return tile_grid(options.lat, options.lon, options.zoom, options.cols, options.rows)
+        if _tile_intersects_polygon(tile, points)
+    )
 
 
 def resolve_options(options: DownloadOptions) -> DownloadOptions:
@@ -198,22 +230,39 @@ def tile_path(out: str | Path, tile: Tile) -> Path:
 def download(options: DownloadOptions | None = None) -> DownloadReport:
     options = resolve_options(options or DownloadOptions())
     center = latlon_to_tile(options.lat, options.lon, options.zoom)
-    tiles = tiles_for_options(options)
+    tiles = tile_iter_for_options(options)
     downloaded: list[DownloadedTile] = []
     failed: list[Tile] = []
 
     with ThreadPoolExecutor(max_workers=max(1, options.jobs)) as executor:
-        futures = {executor.submit(_download_tile, tile): tile for tile in tiles}
-        for future in as_completed(futures):
-            tile = futures[future]
-            data = future.result()
-            if data is None:
-                failed.append(tile)
-                continue
-            path = tile_path(options.out, tile)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-            downloaded.append(DownloadedTile(tile=tile, bounds=tile_bounds(tile), path=str(path), bytes=len(data)))
+        tile_iter = iter(tiles)
+        futures = {}
+
+        def submit_next() -> None:
+            try:
+                tile = next(tile_iter)
+            except StopIteration:
+                return
+            futures[executor.submit(_download_tile, tile)] = tile
+
+        for _ in range(max(1, options.jobs)):
+            submit_next()
+
+        while futures:
+            done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                tile = futures.pop(future)
+                data = future.result()
+                if data is None:
+                    failed.append(tile)
+                else:
+                    path = tile_path(options.out, tile)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+                    downloaded.append(
+                        DownloadedTile(tile=tile, bounds=tile_bounds(tile), path=str(path), bytes=len(data))
+                    )
+                submit_next()
 
     report = DownloadReport(center=center, tiles=downloaded, failed=failed)
     out = Path(options.out)
@@ -266,8 +315,13 @@ def _tile_url(subdomain: str, tile: Tile) -> str:
     return f"https://{subdomain}.google.com/vt/lyrs=s&x={tile.x}&y={tile.y}&z={tile.z}"
 
 
-def _tiles_in_range(min_x: int, max_x: int, min_y: int, max_y: int, z: int) -> list[Tile]:
-    return [Tile(x, y, z) for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1)]
+def _tile_grid_iter(lat: float, lon: float, zoom: int, cols: int, rows: int) -> Iterator[Tile]:
+    center = latlon_to_tile(lat, lon, zoom)
+    return (Tile(center.x + col, center.y + row, zoom) for row in range(rows) for col in range(cols))
+
+
+def _tiles_in_range(min_x: int, max_x: int, min_y: int, max_y: int, z: int) -> Iterator[Tile]:
+    return (Tile(x, y, z) for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1))
 
 
 def _find_polygon_geometry(value: object) -> dict | None:

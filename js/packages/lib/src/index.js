@@ -44,14 +44,7 @@ export function metersPerPixel(lat, z) {
 }
 
 export function tileGrid(lat, lon, zoom, cols, rows) {
-  const center = latlonToTile(lat, lon, zoom);
-  return Array.from({ length: rows }, (_, row) =>
-    Array.from({ length: cols }, (_, col) => ({
-      x: center.x + col,
-      y: center.y + row,
-      z: zoom,
-    })),
-  ).flat();
+  return Array.from(tileGridIterator(lat, lon, zoom, cols, rows));
 }
 
 export function tileGridBetween(
@@ -63,44 +56,54 @@ export function tileGridBetween(
 ) {
   const first = latlonToTile(topLeftLat, topLeftLon, zoom);
   const second = latlonToTile(bottomRightLat, bottomRightLon, zoom);
-  return tilesInRange(
-    Math.min(first.x, second.x),
-    Math.max(first.x, second.x),
-    Math.min(first.y, second.y),
-    Math.max(first.y, second.y),
-    zoom,
+  return Array.from(
+    tilesInRange(
+      Math.min(first.x, second.x),
+      Math.max(first.x, second.x),
+      Math.min(first.y, second.y),
+      Math.max(first.y, second.y),
+      zoom,
+    ),
   );
 }
 
 export function tileGridForPolygon(points, zoom) {
-  if (points.length < 3) return [];
-  const lats = points.map((point) => point.lat);
-  const lons = points.map((point) => point.lon);
-  return tileGridBetween(
-    Math.max(...lats),
-    Math.min(...lons),
-    Math.min(...lats),
-    Math.max(...lons),
-    zoom,
-  ).filter((tile) => tileIntersectsPolygon(tile, points));
+  return Array.from(tileGridForPolygonIterator(points, zoom));
 }
 
 export function tilesForOptions(options) {
+  return Array.from(tileIteratorForOptions(options));
+}
+
+export function countTilesForOptions(options) {
+  let count = 0;
+  const tiles = tileIteratorForOptions(options);
+  while (!tiles.next().done) count += 1;
+  return count;
+}
+
+function tileIteratorForOptions(options) {
   if (options.polygon?.length >= 3)
-    return tileGridForPolygon(options.polygon, options.zoom);
+    return tileGridForPolygonIterator(options.polygon, options.zoom);
   if (
     options.bottomRightLat !== undefined &&
     options.bottomRightLon !== undefined
   ) {
-    return tileGridBetween(
-      options.lat,
-      options.lon,
+    const first = latlonToTile(options.lat, options.lon, options.zoom);
+    const second = latlonToTile(
       options.bottomRightLat,
       options.bottomRightLon,
       options.zoom,
     );
+    return tilesInRange(
+      Math.min(first.x, second.x),
+      Math.max(first.x, second.x),
+      Math.min(first.y, second.y),
+      Math.max(first.y, second.y),
+      options.zoom,
+    );
   }
-  return tileGrid(
+  return tileGridIterator(
     options.lat,
     options.lon,
     options.zoom,
@@ -141,13 +144,15 @@ export async function download(options = {}) {
   }
   validateOptions(config);
   const center = latlonToTile(config.lat, config.lon, config.zoom);
-  const queue = tilesForOptions(config);
+  const queue = tileIteratorForOptions(config);
   const tiles = [];
   const failed = [];
 
   async function worker() {
-    while (queue.length > 0) {
-      const tile = queue.shift();
+    while (true) {
+      const next = queue.next();
+      if (next.done) break;
+      const tile = next.value;
       const data = await downloadTile(tile);
       if (!data) {
         failed.push(tile);
@@ -357,14 +362,38 @@ function manifestBounds(tile) {
   };
 }
 
-function tilesInRange(minX, maxX, minY, maxY, z) {
-  return Array.from({ length: maxY - minY + 1 }, (_, row) =>
-    Array.from({ length: maxX - minX + 1 }, (_, col) => ({
-      x: minX + col,
-      y: minY + row,
-      z,
-    })),
-  ).flat();
+function* tileGridIterator(lat, lon, zoom, cols, rows) {
+  const center = latlonToTile(lat, lon, zoom);
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      yield { x: center.x + col, y: center.y + row, z: zoom };
+    }
+  }
+}
+
+function* tileGridForPolygonIterator(points, zoom) {
+  if (points.length < 3) return;
+  const lats = points.map((point) => point.lat);
+  const lons = points.map((point) => point.lon);
+  const first = latlonToTile(Math.max(...lats), Math.min(...lons), zoom);
+  const second = latlonToTile(Math.min(...lats), Math.max(...lons), zoom);
+  for (const tile of tilesInRange(
+    Math.min(first.x, second.x),
+    Math.max(first.x, second.x),
+    Math.min(first.y, second.y),
+    Math.max(first.y, second.y),
+    zoom,
+  )) {
+    if (tileIntersectsPolygon(tile, points)) yield tile;
+  }
+}
+
+function* tilesInRange(minX, maxX, minY, maxY, z) {
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      yield { x, y, z };
+    }
+  }
 }
 
 function validateOptions(options) {

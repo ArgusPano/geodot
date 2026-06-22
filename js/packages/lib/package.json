@@ -1,6 +1,6 @@
 {
   "name": "@geodot/lib",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Download satellite map tiles as a JavaScript library",
   "type": "module",
   "license": "MIT OR Apache-2.0",

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use geodot::{
-    Coordinate, DownloadOptions, MAX_ZOOM, download, load_geojson_polygon, meters_per_pixel,
-    tiles_for_options, validate_options,
+    Coordinate, DownloadOptions, MAX_ZOOM, count_tiles_for_options, download, load_geojson_polygon,
+    meters_per_pixel, validate_options,
 };
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
     };
     validate_options(&options)?;
     let center = geodot::latlon_to_tile(options.lat, options.lon, options.zoom);
-    let selected_tiles = tiles_for_options(&options);
+    let selected_tile_count = count_tiles_for_options(&options);
 
     println!();
     println!("  geodot - satellite tiles");
@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
         "  Tile:     ({}, {})  at zoom {}",
         center.x, center.y, options.zoom
     );
-    println!("  Tiles:    {}", selected_tiles.len());
+    println!("  Tiles:    {}", selected_tile_count);
     println!(
         "  m/px:     {:.2}",
         meters_per_pixel(options.lat, options.zoom)
