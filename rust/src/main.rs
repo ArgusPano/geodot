@@ -1,7 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use geodot::{
-    Coordinate, DownloadOptions, MAX_ZOOM, count_tiles_for_options, download, load_geojson_polygon,
+    Coordinate, DownloadOptions, DownloadProgress, MAX_ZOOM, SelectionProgress,
+    count_tiles_for_options_with_progress, download_with_progress, load_geojson_polygon,
     meters_per_pixel, validate_options,
 };
 use std::path::PathBuf;
@@ -135,7 +136,6 @@ async fn main() -> Result<()> {
     };
     validate_options(&options)?;
     let center = geodot::latlon_to_tile(options.lat, options.lon, options.zoom);
-    let selected_tile_count = count_tiles_for_options(&options);
 
     println!();
     println!("  geodot - satellite tiles");
@@ -145,6 +145,9 @@ async fn main() -> Result<()> {
         "  Tile:     ({}, {})  at zoom {}",
         center.x, center.y, options.zoom
     );
+    println!("  Selecting tiles...");
+    let mut selecting = selection_progress_printer();
+    let selected_tile_count = count_tiles_for_options_with_progress(&options, &mut selecting);
     println!("  Tiles:    {}", selected_tile_count);
     println!(
         "  m/px:     {:.2}",
@@ -153,7 +156,14 @@ async fn main() -> Result<()> {
     println!("  Output:   {}", options.out.display());
     println!();
 
-    let report = download(options).await?;
+    let mut downloading = download_progress_printer(selected_tile_count);
+    let report = download_with_progress(options, &mut downloading).await?;
+    downloading(DownloadProgress {
+        completed: report.tiles.len() + report.failed.len(),
+        downloaded: report.tiles.len(),
+        failed: report.failed.len(),
+        tile: center,
+    });
 
     for tile in &report.tiles {
         println!(
@@ -177,6 +187,52 @@ async fn main() -> Result<()> {
         report.failed.len()
     );
     Ok(())
+}
+
+fn selection_progress_printer() -> impl FnMut(SelectionProgress) {
+    let mut last = Instant::now();
+    move |progress| {
+        let now = Instant::now();
+        if progress.total != 0 && now.duration_since(last).as_secs_f64() < 1.0 {
+            return;
+        }
+        last = now;
+        let percent = if progress.total == 0 {
+            String::new()
+        } else {
+            format!(
+                " ({:.1}%)",
+                progress.scanned as f64 / progress.total as f64 * 100.0
+            )
+        };
+        eprintln!(
+            "  Selecting: scanned {}{}, matched {}",
+            progress.scanned, percent, progress.selected
+        );
+    }
+}
+
+fn download_progress_printer(total: usize) -> impl FnMut(DownloadProgress) {
+    let mut last = Instant::now();
+    move |progress| {
+        let now = Instant::now();
+        if progress.completed != total && now.duration_since(last).as_secs_f64() < 1.0 {
+            return;
+        }
+        last = now;
+        let percent = if total == 0 {
+            String::new()
+        } else {
+            format!(
+                " ({:.1}%)",
+                progress.completed as f64 / total as f64 * 100.0
+            )
+        };
+        eprintln!(
+            "  Downloading: {}/{}{}, ok {}, failed {}",
+            progress.completed, total, percent, progress.downloaded, progress.failed
+        );
+    }
 }
 
 fn serve_demo(args: DemoArgs) -> Result<()> {

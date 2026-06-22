@@ -97,6 +97,21 @@ pub struct DownloadReport {
     pub failed: Vec<Tile>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionProgress {
+    pub scanned: usize,
+    pub selected: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadProgress {
+    pub completed: usize,
+    pub downloaded: usize,
+    pub failed: usize,
+    pub tile: Tile,
+}
+
 pub fn latlon_to_tile(lat: f64, lon: f64, z: u32) -> Tile {
     let n = 2u64.pow(z) as f64;
     let x = ((lon + 180.0) / 360.0 * n).floor() as u32;
@@ -155,6 +170,35 @@ pub fn tiles_for_options(options: &DownloadOptions) -> Vec<Tile> {
 
 pub fn count_tiles_for_options(options: &DownloadOptions) -> usize {
     tile_iter_for_options(options).count()
+}
+
+pub fn count_tiles_for_options_with_progress(
+    options: &DownloadOptions,
+    mut on_progress: impl FnMut(SelectionProgress),
+) -> usize {
+    if options.polygon.len() >= 3 {
+        return count_polygon_tiles_with_progress(&options.polygon, options.zoom, on_progress);
+    }
+    if let (Some(lat2), Some(lon2)) = (options.bottom_right_lat, options.bottom_right_lon) {
+        let a = latlon_to_tile(options.lat, options.lon, options.zoom);
+        let b = latlon_to_tile(lat2, lon2, options.zoom);
+        return count_range_tiles_with_progress(
+            a.x.min(b.x),
+            a.x.max(b.x),
+            a.y.min(b.y),
+            a.y.max(b.y),
+            on_progress,
+        );
+    }
+    let total = options.cols as usize * options.rows as usize;
+    for scanned in 1..=total {
+        on_progress(SelectionProgress {
+            scanned,
+            selected: scanned,
+            total,
+        });
+    }
+    total
 }
 
 fn tile_iter_for_options(options: &DownloadOptions) -> Box<dyn Iterator<Item = Tile> + '_> {
@@ -309,7 +353,14 @@ pub fn tile_path(out: impl AsRef<Path>, tile: Tile) -> PathBuf {
         .join(format!("{}.jpg", tile.y))
 }
 
-pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
+pub async fn download(options: DownloadOptions) -> Result<DownloadReport> {
+    download_with_progress(options, |_| {}).await
+}
+
+pub async fn download_with_progress(
+    mut options: DownloadOptions,
+    mut on_progress: impl FnMut(DownloadProgress),
+) -> Result<DownloadReport> {
     if options.polygon.len() < 3
         && let Some(source) = &options.geojson
     {
@@ -345,6 +396,7 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
 
     let mut downloaded = Vec::new();
     let mut failed = Vec::new();
+    let mut completed = 0;
     while let Some((tile, data)) = downloads.next().await {
         match data {
             Some(bytes) => {
@@ -362,6 +414,13 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
             }
             None => failed.push(tile),
         }
+        completed += 1;
+        on_progress(DownloadProgress {
+            completed,
+            downloaded: downloaded.len(),
+            failed: failed.len(),
+            tile,
+        });
     }
 
     let report = DownloadReport {
@@ -376,6 +435,69 @@ pub async fn download(mut options: DownloadOptions) -> Result<DownloadReport> {
         write_demo(&options.out, &report)?;
     }
     Ok(report)
+}
+
+fn count_polygon_tiles_with_progress(
+    points: &[Coordinate],
+    zoom: u32,
+    mut on_progress: impl FnMut(SelectionProgress),
+) -> usize {
+    if points.len() < 3 {
+        return 0;
+    }
+    let min_lat = points.iter().map(|p| p.lat).fold(f64::INFINITY, f64::min);
+    let max_lat = points
+        .iter()
+        .map(|p| p.lat)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_lon = points.iter().map(|p| p.lon).fold(f64::INFINITY, f64::min);
+    let max_lon = points
+        .iter()
+        .map(|p| p.lon)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let a = latlon_to_tile(max_lat, min_lon, zoom);
+    let b = latlon_to_tile(min_lat, max_lon, zoom);
+    let min_x = a.x.min(b.x);
+    let max_x = a.x.max(b.x);
+    let min_y = a.y.min(b.y);
+    let max_y = a.y.max(b.y);
+    let total = range_tile_count(min_x, max_x, min_y, max_y);
+    let mut scanned = 0;
+    let mut selected = 0;
+    for tile in tiles_in_range(min_x, max_x, min_y, max_y, zoom) {
+        scanned += 1;
+        if tile_intersects_polygon(tile, points) {
+            selected += 1;
+        }
+        on_progress(SelectionProgress {
+            scanned,
+            selected,
+            total,
+        });
+    }
+    selected
+}
+
+fn count_range_tiles_with_progress(
+    min_x: u32,
+    max_x: u32,
+    min_y: u32,
+    max_y: u32,
+    mut on_progress: impl FnMut(SelectionProgress),
+) -> usize {
+    let total = range_tile_count(min_x, max_x, min_y, max_y);
+    for scanned in 1..=total {
+        on_progress(SelectionProgress {
+            scanned,
+            selected: scanned,
+            total,
+        });
+    }
+    total
+}
+
+fn range_tile_count(min_x: u32, max_x: u32, min_y: u32, max_y: u32) -> usize {
+    (max_x - min_x + 1) as usize * (max_y - min_y + 1) as usize
 }
 
 fn tile_grid_iter(

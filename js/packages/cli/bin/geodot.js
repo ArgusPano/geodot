@@ -243,7 +243,6 @@ async function runDownload() {
   }
   const start = performance.now();
   const center = latlonToTile(options.lat, options.lon, options.zoom);
-  const selectedTileCount = countTilesForOptions(options);
 
   console.log("\n  geodot - satellite tiles");
   console.log("  -------------------------------------");
@@ -251,13 +250,24 @@ async function runDownload() {
   console.log(
     `  Tile:     (${center.x}, ${center.y})  at zoom ${options.zoom}`,
   );
+  console.log("  Selecting tiles...");
+  const selecting = progressPrinter("select");
+  const selectedTileCount = countTilesForOptions(options, selecting);
   console.log(`  Tiles:    ${selectedTileCount}`);
   console.log(
     `  m/px:     ${metersPerPixel(options.lat, options.zoom).toFixed(2)}`,
   );
   console.log(`  Output:   ${options.out}\n`);
 
-  const report = await download(options);
+  const downloading = progressPrinter("download", selectedTileCount);
+  const report = await download({ ...options, onProgress: downloading });
+  downloading({
+    phase: "download",
+    completed: report.tiles.length + report.failed.length,
+    downloaded: report.tiles.length,
+    failed: report.failed.length,
+    done: true,
+  });
   for (const item of report.tiles) {
     console.log(
       `  (${item.tile.x},${item.tile.y})  ${String(item.bytes).padStart(6)} B  ${item.path}`,
@@ -270,6 +280,31 @@ async function runDownload() {
   console.log(
     `  ${report.tiles.length} tiles  |  ${((performance.now() - start) / 1000).toFixed(1)}s  |  failed: ${report.failed.length}`,
   );
+}
+
+function progressPrinter(phase, total) {
+  let last = 0;
+  return (event) => {
+    const now = performance.now();
+    if (!event.done && now - last < 1000) return;
+    last = now;
+    if (phase === "select") {
+      const percent = event.total
+        ? ` (${((event.scanned / event.total) * 100).toFixed(1)}%)`
+        : "";
+      console.error(
+        `  Selecting: scanned ${event.scanned ?? 0}${percent}, matched ${event.selected ?? 0}`,
+      );
+      return;
+    }
+    const completed = event.completed ?? 0;
+    const percent = total
+      ? ` (${((completed / total) * 100).toFixed(1)}%)`
+      : "";
+    console.error(
+      `  Downloading: ${completed}/${total ?? "?"}${percent}, ok ${event.downloaded ?? 0}, failed ${event.failed ?? 0}`,
+    );
+  };
 }
 
 if (process.argv[2] === "demo") {

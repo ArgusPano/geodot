@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import webbrowser
+from dataclasses import replace
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from .core import (
@@ -49,16 +50,28 @@ def main() -> None:
     start = time.perf_counter()
     options = resolve_options(DownloadOptions(**vars(args)))
     center = latlon_to_tile(args.lat, args.lon, args.zoom)
-    selected_tile_count = count_tiles_for_options(options)
     print("\n  geodot - satellite tiles")
     print("  -------------------------------------")
     print(f"  Top-left: {args.lat} {args.lon}")
     print(f"  Tile:    ({center.x}, {center.y})  at zoom {args.zoom}")
+    print("  Selecting tiles...")
+    selecting = _progress_printer("select")
+    selected_tile_count = count_tiles_for_options(options, selecting)
     print(f"  Tiles:   {selected_tile_count}")
     print(f"  m/px:    {meters_per_pixel(args.lat, args.zoom):.2f}")
     print(f"  Output:  {args.out}\n")
 
-    report = download(options)
+    downloading = _progress_printer("download", selected_tile_count)
+    report = download(replace(options, on_progress=downloading))
+    downloading(
+        {
+            "phase": "download",
+            "completed": len(report.tiles) + len(report.failed),
+            "downloaded": len(report.tiles),
+            "failed": len(report.failed),
+            "done": True,
+        }
+    )
     for item in report.tiles:
         print(f"  ({item.tile.x},{item.tile.y})  {item.bytes:>6} B  {item.path}")
     for tile in report.failed:
@@ -66,6 +79,33 @@ def main() -> None:
 
     print("\n  -------------------------------------")
     print(f"  {len(report.tiles)} tiles  |  {time.perf_counter() - start:.1f}s  |  failed: {len(report.failed)}")
+
+
+def _progress_printer(phase: str, total: int | None = None):
+    last = 0.0
+
+    def print_progress(event: dict) -> None:
+        nonlocal last
+        now = time.perf_counter()
+        if not event.get("done") and now - last < 1.0:
+            return
+        last = now
+        if phase == "select":
+            scanned = event.get("scanned", 0)
+            selected = event.get("selected", 0)
+            candidate_total = event.get("total")
+            percent = f" ({scanned / candidate_total * 100:.1f}%)" if candidate_total else ""
+            print(f"  Selecting: scanned {scanned}{percent}, matched {selected}", file=sys.stderr)
+            return
+        completed = event.get("completed", 0)
+        percent = f" ({completed / total * 100:.1f}%)" if total else ""
+        status = f"{completed}/{total or '?'}{percent}"
+        print(
+            f"  Downloading: {status}, ok {event.get('downloaded', 0)}, failed {event.get('failed', 0)}",
+            file=sys.stderr,
+        )
+
+    return print_progress
 
 
 _EMPTY_PNG = base64.b64decode(

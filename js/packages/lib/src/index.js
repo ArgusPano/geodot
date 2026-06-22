@@ -75,16 +75,20 @@ export function tilesForOptions(options) {
   return Array.from(tileIteratorForOptions(options));
 }
 
-export function countTilesForOptions(options) {
+export function countTilesForOptions(options, onProgress) {
   let count = 0;
-  const tiles = tileIteratorForOptions(options);
+  const tiles = tileIteratorForOptions(options, onProgress);
   while (!tiles.next().done) count += 1;
   return count;
 }
 
-function tileIteratorForOptions(options) {
+function tileIteratorForOptions(options, onProgress) {
   if (options.polygon?.length >= 3)
-    return tileGridForPolygonIterator(options.polygon, options.zoom);
+    return tileGridForPolygonIterator(
+      options.polygon,
+      options.zoom,
+      onProgress,
+    );
   if (
     options.bottomRightLat !== undefined &&
     options.bottomRightLon !== undefined
@@ -101,6 +105,7 @@ function tileIteratorForOptions(options) {
       Math.min(first.y, second.y),
       Math.max(first.y, second.y),
       options.zoom,
+      onProgress,
     );
   }
   return tileGridIterator(
@@ -109,6 +114,7 @@ function tileIteratorForOptions(options) {
     options.zoom,
     options.cols,
     options.rows,
+    onProgress,
   );
 }
 
@@ -147,6 +153,7 @@ export async function download(options = {}) {
   const queue = tileIteratorForOptions(config);
   const tiles = [];
   const failed = [];
+  let completed = 0;
 
   async function worker() {
     while (true) {
@@ -156,6 +163,14 @@ export async function download(options = {}) {
       const data = await downloadTile(tile);
       if (!data) {
         failed.push(tile);
+        completed += 1;
+        config.onProgress?.({
+          phase: "download",
+          completed,
+          downloaded: tiles.length,
+          failed: failed.length,
+          tile,
+        });
         continue;
       }
       const file = tilePath(config.out, tile);
@@ -166,6 +181,14 @@ export async function download(options = {}) {
         bounds: manifestBounds(tile),
         path: file,
         bytes: data.byteLength,
+      });
+      completed += 1;
+      config.onProgress?.({
+        phase: "download",
+        completed,
+        downloaded: tiles.length,
+        failed: failed.length,
+        tile,
       });
     }
   }
@@ -362,35 +385,55 @@ function manifestBounds(tile) {
   };
 }
 
-function* tileGridIterator(lat, lon, zoom, cols, rows) {
+function* tileGridIterator(lat, lon, zoom, cols, rows, onProgress) {
   const center = latlonToTile(lat, lon, zoom);
+  let scanned = 0;
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
+      scanned += 1;
+      onProgress?.({
+        phase: "select",
+        scanned,
+        selected: scanned,
+        total: cols * rows,
+      });
       yield { x: center.x + col, y: center.y + row, z: zoom };
     }
   }
 }
 
-function* tileGridForPolygonIterator(points, zoom) {
+function* tileGridForPolygonIterator(points, zoom, onProgress) {
   if (points.length < 3) return;
   const lats = points.map((point) => point.lat);
   const lons = points.map((point) => point.lon);
   const first = latlonToTile(Math.max(...lats), Math.min(...lons), zoom);
   const second = latlonToTile(Math.min(...lats), Math.max(...lons), zoom);
-  for (const tile of tilesInRange(
-    Math.min(first.x, second.x),
-    Math.max(first.x, second.x),
-    Math.min(first.y, second.y),
-    Math.max(first.y, second.y),
-    zoom,
-  )) {
-    if (tileIntersectsPolygon(tile, points)) yield tile;
+  const minX = Math.min(first.x, second.x);
+  const maxX = Math.max(first.x, second.x);
+  const minY = Math.min(first.y, second.y);
+  const maxY = Math.max(first.y, second.y);
+  const total = (maxX - minX + 1) * (maxY - minY + 1);
+  let scanned = 0;
+  let selected = 0;
+  for (const tile of tilesInRange(minX, maxX, minY, maxY, zoom)) {
+    scanned += 1;
+    if (tileIntersectsPolygon(tile, points)) {
+      selected += 1;
+      onProgress?.({ phase: "select", scanned, selected, total });
+      yield tile;
+    } else {
+      onProgress?.({ phase: "select", scanned, selected, total });
+    }
   }
 }
 
-function* tilesInRange(minX, maxX, minY, maxY, z) {
+function* tilesInRange(minX, maxX, minY, maxY, z, onProgress) {
+  const total = (maxX - minX + 1) * (maxY - minY + 1);
+  let scanned = 0;
   for (let y = minY; y <= maxY; y += 1) {
     for (let x = minX; x <= maxX; x += 1) {
+      scanned += 1;
+      onProgress?.({ phase: "select", scanned, selected: scanned, total });
       yield { x, y, z };
     }
   }

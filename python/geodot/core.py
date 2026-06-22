@@ -5,10 +5,11 @@ import math
 import os
 import random
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 TILE_SIZE = 256
 MAX_ZOOM = 30
@@ -63,6 +64,7 @@ class DownloadOptions:
     jobs: int = 16
     no_manifest: bool = False
     no_demo: bool = False
+    on_progress: Callable[[dict[str, Any]], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -133,13 +135,17 @@ def tiles_for_options(options: DownloadOptions) -> list[Tile]:
     return list(tile_iter_for_options(options))
 
 
-def count_tiles_for_options(options: DownloadOptions) -> int:
-    return sum(1 for _tile in tile_iter_for_options(options))
+def count_tiles_for_options(
+    options: DownloadOptions, on_progress: Callable[[dict[str, Any]], None] | None = None
+) -> int:
+    return sum(1 for _tile in tile_iter_for_options(options, on_progress))
 
 
-def tile_iter_for_options(options: DownloadOptions) -> Iterator[Tile]:
+def tile_iter_for_options(
+    options: DownloadOptions, on_progress: Callable[[dict[str, Any]], None] | None = None
+) -> Iterator[Tile]:
     if options.polygon and len(options.polygon) >= 3:
-        return _tile_grid_for_polygon_iter(options.polygon, options.zoom)
+        return _tile_grid_for_polygon_iter(options.polygon, options.zoom, on_progress)
     if options.bottom_right_lat is not None and options.bottom_right_lon is not None:
         first = latlon_to_tile(options.lat, options.lon, options.zoom)
         second = latlon_to_tile(options.bottom_right_lat, options.bottom_right_lon, options.zoom)
@@ -149,11 +155,14 @@ def tile_iter_for_options(options: DownloadOptions) -> Iterator[Tile]:
             min(first.y, second.y),
             max(first.y, second.y),
             options.zoom,
+            on_progress,
         )
-    return _tile_grid_iter(options.lat, options.lon, options.zoom, options.cols, options.rows)
+    return _tile_grid_iter(options.lat, options.lon, options.zoom, options.cols, options.rows, on_progress)
 
 
-def _tile_grid_for_polygon_iter(points: list[Coordinate], zoom: int) -> Iterator[Tile]:
+def _tile_grid_for_polygon_iter(
+    points: list[Coordinate], zoom: int, on_progress: Callable[[dict[str, Any]], None] | None = None
+) -> Iterator[Tile]:
     if len(points) < 3:
         return iter(())
     min_lat = min(point.lat for point in points)
@@ -162,17 +171,26 @@ def _tile_grid_for_polygon_iter(points: list[Coordinate], zoom: int) -> Iterator
     max_lon = max(point.lon for point in points)
     first = latlon_to_tile(max_lat, min_lon, zoom)
     second = latlon_to_tile(min_lat, max_lon, zoom)
-    return (
-        tile
-        for tile in _tiles_in_range(
-            min(first.x, second.x),
-            max(first.x, second.x),
-            min(first.y, second.y),
-            max(first.y, second.y),
-            zoom,
-        )
-        if _tile_intersects_polygon(tile, points)
-    )
+    min_x = min(first.x, second.x)
+    max_x = max(first.x, second.x)
+    min_y = min(first.y, second.y)
+    max_y = max(first.y, second.y)
+    total = (max_x - min_x + 1) * (max_y - min_y + 1)
+
+    def iterator() -> Iterator[Tile]:
+        scanned = 0
+        selected = 0
+        for tile in _tiles_in_range(min_x, max_x, min_y, max_y, zoom):
+            scanned += 1
+            if _tile_intersects_polygon(tile, points):
+                selected += 1
+                if on_progress:
+                    on_progress({"phase": "select", "scanned": scanned, "selected": selected, "total": total})
+                yield tile
+            elif on_progress:
+                on_progress({"phase": "select", "scanned": scanned, "selected": selected, "total": total})
+
+    return iterator()
 
 
 def resolve_options(options: DownloadOptions) -> DownloadOptions:
@@ -233,6 +251,7 @@ def download(options: DownloadOptions | None = None) -> DownloadReport:
     tiles = tile_iter_for_options(options)
     downloaded: list[DownloadedTile] = []
     failed: list[Tile] = []
+    completed = 0
 
     with ThreadPoolExecutor(max_workers=max(1, options.jobs)) as executor:
         tile_iter = iter(tiles)
@@ -261,6 +280,17 @@ def download(options: DownloadOptions | None = None) -> DownloadReport:
                     path.write_bytes(data)
                     downloaded.append(
                         DownloadedTile(tile=tile, bounds=tile_bounds(tile), path=str(path), bytes=len(data))
+                    )
+                completed += 1
+                if options.on_progress:
+                    options.on_progress(
+                        {
+                            "phase": "download",
+                            "completed": completed,
+                            "downloaded": len(downloaded),
+                            "failed": len(failed),
+                            "tile": tile,
+                        }
                     )
                 submit_next()
 
@@ -315,13 +345,48 @@ def _tile_url(subdomain: str, tile: Tile) -> str:
     return f"https://{subdomain}.google.com/vt/lyrs=s&x={tile.x}&y={tile.y}&z={tile.z}"
 
 
-def _tile_grid_iter(lat: float, lon: float, zoom: int, cols: int, rows: int) -> Iterator[Tile]:
+def _tile_grid_iter(
+    lat: float,
+    lon: float,
+    zoom: int,
+    cols: int,
+    rows: int,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> Iterator[Tile]:
     center = latlon_to_tile(lat, lon, zoom)
-    return (Tile(center.x + col, center.y + row, zoom) for row in range(rows) for col in range(cols))
+
+    def iterator() -> Iterator[Tile]:
+        scanned = 0
+        total = cols * rows
+        for row in range(rows):
+            for col in range(cols):
+                scanned += 1
+                if on_progress:
+                    on_progress({"phase": "select", "scanned": scanned, "selected": scanned, "total": total})
+                yield Tile(center.x + col, center.y + row, zoom)
+
+    return iterator()
 
 
-def _tiles_in_range(min_x: int, max_x: int, min_y: int, max_y: int, z: int) -> Iterator[Tile]:
-    return (Tile(x, y, z) for y in range(min_y, max_y + 1) for x in range(min_x, max_x + 1))
+def _tiles_in_range(
+    min_x: int,
+    max_x: int,
+    min_y: int,
+    max_y: int,
+    z: int,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> Iterator[Tile]:
+    def iterator() -> Iterator[Tile]:
+        scanned = 0
+        total = (max_x - min_x + 1) * (max_y - min_y + 1)
+        for y in range(min_y, max_y + 1):
+            for x in range(min_x, max_x + 1):
+                scanned += 1
+                if on_progress:
+                    on_progress({"phase": "select", "scanned": scanned, "selected": scanned, "total": total})
+                yield Tile(x, y, z)
+
+    return iterator()
 
 
 def _find_polygon_geometry(value: object) -> dict | None:
