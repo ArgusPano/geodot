@@ -462,10 +462,9 @@ fn count_polygon_tiles_with_progress(
     let min_y = a.y.min(b.y);
     let max_y = a.y.max(b.y);
     let total = range_tile_count(min_x, max_x, min_y, max_y);
-    let mut scanned = 0;
     let mut selected = 0;
-    for tile in tiles_in_range(min_x, max_x, min_y, max_y, zoom) {
-        scanned += 1;
+    for (index, tile) in tiles_in_range(min_x, max_x, min_y, max_y, zoom).enumerate() {
+        let scanned = index + 1;
         if tile_intersects_polygon(tile, points) {
             selected += 1;
         }
