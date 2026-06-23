@@ -45,10 +45,16 @@ def main() -> None:
     parser.add_argument("-r", "--rows", type=_positive_int, default=3, help="tile rows downward from center")
     parser.add_argument("-o", "--out", default="data", help="output directory")
     parser.add_argument("-j", "--jobs", type=_positive_int, default=16, help="max concurrent downloads")
-    parser.add_argument("--prepare", action="store_true", help="prepare a virtual VPR dataset from existing output tiles")
-    parser.add_argument("--patch-sizes", type=_parse_int_list, default="1,2,3,4", help="mosaic sizes in tiles for --prepare")
+    parser.add_argument(
+        "--prepare", action="store_true", help="prepare a virtual VPR dataset from existing output tiles"
+    )
+    parser.add_argument(
+        "--patch-sizes", type=_parse_int_list, default="1,2,3,4", help="mosaic sizes in tiles for --prepare"
+    )
     parser.add_argument("--stride", type=_positive_int, default=1, help="tile stride for --prepare mosaics")
-    parser.add_argument("--rotations", type=_parse_int_list, default="0,90,180,270", help="rotation variants for --prepare")
+    parser.add_argument(
+        "--rotations", type=_parse_int_list, default="0,90,180,270", help="rotation variants for --prepare"
+    )
     parser.add_argument("--no-manifest", action="store_true", help="do not write manifest.json")
     parser.add_argument("--no-demo", action="store_true", help="do not write index.html")
     args = parser.parse_args()

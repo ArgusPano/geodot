@@ -467,9 +467,7 @@ def _build_patches(
             for y in range(min(ys), max(ys) - size + 2, options.stride):
                 for x in range(min(xs), max(xs) - size + 2, options.stride):
                     keys = [
-                        (z, source_x, source_y)
-                        for source_y in range(y, y + size)
-                        for source_x in range(x, x + size)
+                        (z, source_x, source_y) for source_y in range(y, y + size) for source_x in range(x, x + size)
                     ]
                     source_tiles = [tile_ids.get(key) for key in keys]
                     if any(tile_id is None for tile_id in source_tiles):

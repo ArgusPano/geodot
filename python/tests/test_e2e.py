@@ -154,12 +154,8 @@ def test_cli_prepare_existing_tiles(tmp_path: Path) -> None:
     )
 
     assert "dataset preparation" in result.stdout
-    patches = json.loads(
-        (tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8")
-    )
-    variants = json.loads(
-        (tmp_path / "vpr" / "manifest" / "variants.json").read_text(encoding="utf-8")
-    )
+    patches = json.loads((tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8"))
+    variants = json.loads((tmp_path / "vpr" / "manifest" / "variants.json").read_text(encoding="utf-8"))
     assert len(patches) == 5
     assert len(variants) == 10
 

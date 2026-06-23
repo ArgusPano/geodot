@@ -144,23 +144,17 @@ def test_prepare_dataset_writes_virtual_vpr_manifests(tmp_path: Path) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"x" * 128)
 
-    report = prepare_dataset(
-        PrepareOptions(out=tmp_path, patch_sizes=(1, 2), rotations=(0, 90))
-    )
+    report = prepare_dataset(PrepareOptions(out=tmp_path, patch_sizes=(1, 2), rotations=(0, 90)))
 
     assert report.tiles == 4
     assert report.patches == 5
     assert report.variants == 10
-    patches = json.loads(
-        (tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8")
-    )
+    patches = json.loads((tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8"))
     mosaic = next(patch for patch in patches if patch["mosaic_size_tiles"] == 2)
     assert mosaic["source_x_min"] == 1
     assert mosaic["source_x_max"] == 2
     assert mosaic["source_y_min"] == 3
     assert mosaic["source_y_max"] == 4
     assert mosaic["image_path_or_virtual_spec"]["type"] == "virtual_mosaic"
-    dataset = json.loads(
-        (tmp_path / "vpr" / "config" / "dataset.json").read_text(encoding="utf-8")
-    )
+    dataset = json.loads((tmp_path / "vpr" / "config" / "dataset.json").read_text(encoding="utf-8"))
     assert dataset["mode"] == "virtual"
