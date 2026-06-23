@@ -1,4 +1,4 @@
-use geodot::{DownloadOptions, download};
+use geodot::{DownloadOptions, PrepareOptions, download, prepare_dataset};
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
@@ -130,6 +130,44 @@ fn cli_accepts_geojson_url() {
 
     server.join().unwrap();
     fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn library_and_cli_prepare_existing_tiles() {
+    let lib_out = temp_dir("geodot-lib-prepare");
+    write_prepare_tiles(&lib_out);
+    let report = prepare_dataset(PrepareOptions {
+        out: lib_out.clone(),
+        patch_sizes: vec![1, 2],
+        stride: 1,
+        rotations: vec![0, 90],
+    })
+    .unwrap();
+    assert_eq!(report.tiles, 4);
+    assert_eq!(report.patches, 5);
+    assert_eq!(report.variants, 10);
+    assert_prepare_output(&lib_out);
+
+    let cli_out = temp_dir("geodot-cli-prepare");
+    write_prepare_tiles(&cli_out);
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .args([
+            "--prepare",
+            "-o",
+            cli_out.to_str().unwrap(),
+            "--patch-sizes",
+            "1,2",
+            "--rotations",
+            "0,90",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("dataset preparation"));
+    assert_prepare_output(&cli_out);
+
+    fs::remove_dir_all(lib_out).unwrap();
+    fs::remove_dir_all(cli_out).unwrap();
 }
 
 #[test]
@@ -296,6 +334,52 @@ fn assert_download_output(out: &Path) {
     )
     .unwrap();
     assert_eq!(bytes, TILE_BYTES);
+}
+
+fn write_prepare_tiles(out: &Path) {
+    for x in [1, 2] {
+        for y in [3, 4] {
+            let path = out
+                .join("tiles")
+                .join("3")
+                .join(x.to_string())
+                .join(format!("{y}.jpg"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, TILE_BYTES).unwrap();
+        }
+    }
+}
+
+fn assert_prepare_output(out: &Path) {
+    let patches: Value = serde_json::from_str(
+        &fs::read_to_string(out.join("vpr").join("manifest").join("patches.json")).unwrap(),
+    )
+    .unwrap();
+    let variants: Value = serde_json::from_str(
+        &fs::read_to_string(out.join("vpr").join("manifest").join("variants.json")).unwrap(),
+    )
+    .unwrap();
+    let dataset: Value = serde_json::from_str(
+        &fs::read_to_string(out.join("vpr").join("config").join("dataset.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(patches.as_array().unwrap().len(), 5);
+    assert_eq!(variants.as_array().unwrap().len(), 10);
+    assert_eq!(dataset["mode"], "virtual");
+    let mosaic = patches
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|patch| patch["mosaic_size_tiles"] == 2)
+        .unwrap();
+    assert_eq!(mosaic["source_x_min"], 1);
+    assert_eq!(mosaic["source_x_max"], 2);
+    assert_eq!(mosaic["source_y_min"], 3);
+    assert_eq!(mosaic["source_y_max"], 4);
+    assert_eq!(
+        mosaic["image_path_or_virtual_spec"]["type"],
+        "virtual_mosaic"
+    );
 }
 
 fn temp_dir(prefix: &str) -> PathBuf {

@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use geodot::{
-    Coordinate, DownloadOptions, DownloadProgress, MAX_ZOOM, SelectionProgress,
+    Coordinate, DownloadOptions, DownloadProgress, MAX_ZOOM, PrepareOptions, SelectionProgress,
     count_tiles_for_options_with_progress, download_with_progress, load_geojson_polygon,
-    meters_per_pixel, validate_options,
+    meters_per_pixel, prepare_dataset, validate_options,
 };
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -69,6 +69,22 @@ struct Args {
     #[arg(short = 'j', long, default_value = "16", value_parser = parse_positive_usize)]
     jobs: usize,
 
+    /// Prepare a virtual VPR dataset from existing output tiles
+    #[arg(long)]
+    prepare: bool,
+
+    /// Mosaic sizes in tiles for --prepare
+    #[arg(long, default_value = "1,2,3,4")]
+    patch_sizes: String,
+
+    /// Tile stride for --prepare mosaics
+    #[arg(long, default_value = "1", value_parser = parse_positive_u32)]
+    stride: u32,
+
+    /// Rotation variants for --prepare
+    #[arg(long, default_value = "0,90,180,270")]
+    rotations: String,
+
     /// Do not write manifest.json
     #[arg(long)]
     no_manifest: bool,
@@ -112,6 +128,22 @@ async fn main() -> Result<()> {
     }
 
     let args = Args::parse();
+    if args.prepare {
+        let report = prepare_dataset(PrepareOptions {
+            out: args.out,
+            patch_sizes: parse_u32_list(&args.patch_sizes).map_err(|error| anyhow!(error))?,
+            stride: args.stride,
+            rotations: parse_u32_list(&args.rotations).map_err(|error| anyhow!(error))?,
+        })?;
+        println!();
+        println!("  geodot - dataset preparation");
+        println!("  -------------------------------------");
+        println!("  Tiles:    {}", report.tiles);
+        println!("  Patches:  {}", report.patches);
+        println!("  Variants: {}", report.variants);
+        println!("  Output:   {}", report.path.display());
+        return Ok(());
+    }
     let start = Instant::now();
     let polygon = match (args.polygon, args.geojson.as_deref()) {
         (Some(polygon), _) => polygon,
@@ -414,6 +446,22 @@ fn parse_positive_u16(value: &str) -> std::result::Result<u16, String> {
         return Err("must be at least 1".to_string());
     }
     Ok(number)
+}
+
+fn parse_u32_list(value: &str) -> std::result::Result<Vec<u32>, String> {
+    let numbers: Result<Vec<_>, _> = value
+        .split(',')
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.parse::<u32>()
+                .map_err(|_| format!("invalid integer list: {value}"))
+        })
+        .collect();
+    let numbers = numbers?;
+    if numbers.is_empty() {
+        return Err("must contain at least one integer".to_string());
+    }
+    Ok(numbers)
 }
 
 fn parse_zoom(value: &str) -> std::result::Result<u32, String> {

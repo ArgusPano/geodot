@@ -1,3 +1,4 @@
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -7,11 +8,13 @@ from geodot import (
     Coordinate,
     DownloadedTile,
     DownloadOptions,
+    PrepareOptions,
     Tile,
     download,
     latlon_to_tile,
     meters_per_pixel,
     polygon_from_geojson,
+    prepare_dataset,
     tile_bounds,
     tile_grid,
     tile_grid_between,
@@ -132,3 +135,32 @@ def test_download_can_skip_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     assert (tmp_path / "manifest.json").exists()
     assert not (tmp_path / "index.html").exists()
+
+
+def test_prepare_dataset_writes_virtual_vpr_manifests(tmp_path: Path) -> None:
+    for x in (1, 2):
+        for y in (3, 4):
+            path = tmp_path / "tiles" / "3" / str(x) / f"{y}.jpg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * 128)
+
+    report = prepare_dataset(
+        PrepareOptions(out=tmp_path, patch_sizes=(1, 2), rotations=(0, 90))
+    )
+
+    assert report.tiles == 4
+    assert report.patches == 5
+    assert report.variants == 10
+    patches = json.loads(
+        (tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8")
+    )
+    mosaic = next(patch for patch in patches if patch["mosaic_size_tiles"] == 2)
+    assert mosaic["source_x_min"] == 1
+    assert mosaic["source_x_max"] == 2
+    assert mosaic["source_y_min"] == 3
+    assert mosaic["source_y_max"] == 4
+    assert mosaic["image_path_or_virtual_spec"]["type"] == "virtual_mosaic"
+    dataset = json.loads(
+        (tmp_path / "vpr" / "config" / "dataset.json").read_text(encoding="utf-8")
+    )
+    assert dataset["mode"] == "virtual"

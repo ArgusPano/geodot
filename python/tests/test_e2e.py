@@ -128,6 +128,42 @@ def test_cli_download_e2e(tmp_path: Path) -> None:
     assert_download_output(tmp_path)
 
 
+def test_cli_prepare_existing_tiles(tmp_path: Path) -> None:
+    for x in (1, 2):
+        for y in (3, 4):
+            path = tmp_path / "tiles" / "3" / str(x) / f"{y}.jpg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(TILE_BYTES)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "geodot.cli",
+            "--prepare",
+            "-o",
+            str(tmp_path),
+            "--patch-sizes",
+            "1,2",
+            "--rotations",
+            "0,90",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "dataset preparation" in result.stdout
+    patches = json.loads(
+        (tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8")
+    )
+    variants = json.loads(
+        (tmp_path / "vpr" / "manifest" / "variants.json").read_text(encoding="utf-8")
+    )
+    assert len(patches) == 5
+    assert len(variants) == 10
+
+
 def test_cli_download_accepts_geojson_url(tmp_path: Path) -> None:
     with tile_server() as template:
         geojson_url = template.split("/{z}", 1)[0] + "/area.geojson"

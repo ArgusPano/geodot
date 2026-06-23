@@ -82,6 +82,22 @@ class DownloadReport:
     failed: list[Tile]
 
 
+@dataclass(frozen=True)
+class PrepareOptions:
+    out: str | Path = "data"
+    patch_sizes: tuple[int, ...] = (1, 2, 3, 4)
+    stride: int = 1
+    rotations: tuple[int, ...] = (0, 90, 180, 270)
+
+
+@dataclass(frozen=True)
+class PrepareReport:
+    tiles: int
+    patches: int
+    variants: int
+    path: str
+
+
 def latlon_to_tile(lat: float, lon: float, z: int) -> Tile:
     n = 2**z
     x = math.floor((lon + 180.0) / 360.0 * n)
@@ -245,6 +261,47 @@ def tile_path(out: str | Path, tile: Tile) -> Path:
     return Path(out) / "tiles" / str(tile.z) / str(tile.x) / f"{tile.y}.jpg"
 
 
+def prepare_dataset(options: PrepareOptions | None = None) -> PrepareReport:
+    options = options or PrepareOptions()
+    _validate_prepare_options(options)
+    out = Path(options.out)
+    tiles = _discover_tiles(out)
+    tile_ids = {(tile["z"], tile["x"], tile["y"]): tile["tile_id"] for tile in tiles}
+    patches = _build_patches(tiles, tile_ids, options)
+    variants = [
+        {
+            "variant_id": f"{patch['patch_id']}_r{rotation}",
+            "patch_id": patch["patch_id"],
+            "rotation_deg": rotation,
+            "descriptor_id": None,
+            "index_id": None,
+        }
+        for patch in patches
+        for rotation in options.rotations
+    ]
+    root = out / "vpr"
+    manifest = root / "manifest"
+    config = root / "config"
+    manifest.mkdir(parents=True, exist_ok=True)
+    config.mkdir(parents=True, exist_ok=True)
+    (manifest / "tiles.json").write_text(json.dumps(tiles, indent=2), encoding="utf-8")
+    (manifest / "patches.json").write_text(json.dumps(patches, indent=2), encoding="utf-8")
+    (manifest / "variants.json").write_text(json.dumps(variants, indent=2), encoding="utf-8")
+    dataset = {
+        "profile": "aerial-vpr-default",
+        "tile_root": "tiles/{z}/{x}/{y}.jpg",
+        "mode": "virtual",
+        "tile_size": TILE_SIZE,
+        "patch_sizes": list(options.patch_sizes),
+        "stride": options.stride,
+        "rotations": list(options.rotations),
+        "appearance": [],
+        "counts": {"tiles": len(tiles), "patches": len(patches), "variants": len(variants)},
+    }
+    (config / "dataset.json").write_text(json.dumps(dataset, indent=2), encoding="utf-8")
+    return PrepareReport(tiles=len(tiles), patches=len(patches), variants=len(variants), path=str(root))
+
+
 def download(options: DownloadOptions | None = None) -> DownloadReport:
     options = resolve_options(options or DownloadOptions())
     center = latlon_to_tile(options.lat, options.lon, options.zoom)
@@ -336,6 +393,122 @@ def _validate_integer_range(name: str, value: int, minimum: int, maximum: int | 
     ):
         limit = f"{minimum} to {maximum}" if maximum is not None else f"at least {minimum}"
         raise ValueError(f"{name} must be an integer {limit}")
+
+
+def _validate_prepare_options(options: PrepareOptions) -> None:
+    _validate_integer_range("stride", options.stride, 1, None)
+    if not options.patch_sizes:
+        raise ValueError("patch_sizes must not be empty")
+    if not options.rotations:
+        raise ValueError("rotations must not be empty")
+    for size in options.patch_sizes:
+        _validate_integer_range("patch_sizes", size, 1, None)
+    for rotation in options.rotations:
+        _validate_integer_range("rotations", rotation, 0, 359)
+
+
+def _discover_tiles(out: Path) -> list[dict[str, Any]]:
+    root = out / "tiles"
+    if not root.exists():
+        raise FileNotFoundError(f"tile directory not found: {root}")
+    tiles: list[dict[str, Any]] = []
+    for file in sorted(root.rglob("*.jpg")):
+        try:
+            z = int(file.parent.parent.name)
+            x = int(file.parent.name)
+            y = int(file.stem)
+        except (ValueError, IndexError):
+            continue
+        if not (0 <= z <= MAX_ZOOM):
+            continue
+        max_tile = 2**z
+        if not (0 <= x < max_tile and 0 <= y < max_tile):
+            continue
+        tile = Tile(x=x, y=y, z=z)
+        bounds = tile_bounds(tile)
+        tile_id = f"z{z}_x{x}_y{y}"
+        tiles.append(
+            {
+                "tile_id": tile_id,
+                "z": z,
+                "x": x,
+                "y": y,
+                "path": str(file.relative_to(out)),
+                "pixel_width": TILE_SIZE,
+                "pixel_height": TILE_SIZE,
+                "lon_min": bounds.lon_min,
+                "lat_min": bounds.lat_min,
+                "lon_max": bounds.lon_max,
+                "lat_max": bounds.lat_max,
+                "center_lon": (bounds.lon_min + bounds.lon_max) / 2,
+                "center_lat": (bounds.lat_min + bounds.lat_max) / 2,
+            }
+        )
+    if not tiles:
+        raise ValueError(f"no valid tiles found under {root}")
+    return tiles
+
+
+def _build_patches(
+    tiles: list[dict[str, Any]],
+    tile_ids: dict[tuple[int, int, int], str],
+    options: PrepareOptions,
+) -> list[dict[str, Any]]:
+    by_zoom: dict[int, list[dict[str, Any]]] = {}
+    for tile in tiles:
+        by_zoom.setdefault(tile["z"], []).append(tile)
+    patches: list[dict[str, Any]] = []
+    for z, zoom_tiles in sorted(by_zoom.items()):
+        xs = sorted({tile["x"] for tile in zoom_tiles})
+        ys = sorted({tile["y"] for tile in zoom_tiles})
+        if not xs or not ys:
+            continue
+        for size in sorted(set(options.patch_sizes)):
+            for y in range(min(ys), max(ys) - size + 2, options.stride):
+                for x in range(min(xs), max(xs) - size + 2, options.stride):
+                    keys = [
+                        (z, source_x, source_y)
+                        for source_y in range(y, y + size)
+                        for source_x in range(x, x + size)
+                    ]
+                    source_tiles = [tile_ids.get(key) for key in keys]
+                    if any(tile_id is None for tile_id in source_tiles):
+                        continue
+                    top_left = tile_bounds(Tile(x=x, y=y, z=z))
+                    bottom_right = tile_bounds(Tile(x=x + size - 1, y=y + size - 1, z=z))
+                    lon_min = top_left.lon_min
+                    lat_min = bottom_right.lat_min
+                    lon_max = bottom_right.lon_max
+                    lat_max = top_left.lat_max
+                    patch_id = f"z{z}_x{x}-{x + size - 1}_y{y}-{y + size - 1}_s{size}"
+                    patches.append(
+                        {
+                            "patch_id": patch_id,
+                            "z": z,
+                            "source_x_min": x,
+                            "source_x_max": x + size - 1,
+                            "source_y_min": y,
+                            "source_y_max": y + size - 1,
+                            "source_tiles": source_tiles,
+                            "pixel_width": TILE_SIZE * size,
+                            "pixel_height": TILE_SIZE * size,
+                            "lon_min": lon_min,
+                            "lat_min": lat_min,
+                            "lon_max": lon_max,
+                            "lat_max": lat_max,
+                            "center_lon": (lon_min + lon_max) / 2,
+                            "center_lat": (lat_min + lat_max) / 2,
+                            "mosaic_size_tiles": size,
+                            "stride_tiles": options.stride,
+                            "scale_profile": f"z{z}_{size}x{size}",
+                            "image_path_or_virtual_spec": {
+                                "type": "virtual_mosaic",
+                                "tile_ids": source_tiles,
+                                "layout": [size, size],
+                            },
+                        }
+                    )
+    return patches
 
 
 def _tile_url(subdomain: str, tile: Tile) -> str:

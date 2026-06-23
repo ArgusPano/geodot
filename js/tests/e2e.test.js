@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -159,6 +159,43 @@ test("CLI download writes tiles and manifest", async () => {
     await assertDownloadOutput(out);
   });
   await rm(out, { recursive: true, force: true });
+});
+
+test("CLI prepares existing tiles", async () => {
+  const out = await mkdtemp(path.join(tmpdir(), "geodot-cli-prepare-"));
+  try {
+    for (const x of [1, 2]) {
+      for (const y of [3, 4]) {
+        const file = path.join(out, "tiles", "3", String(x), `${y}.jpg`);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, tileBytes);
+      }
+    }
+    const { stdout } = await execFileAsync(process.execPath, [
+      "js/packages/cli/bin/geodot.js",
+      "--prepare",
+      "-o",
+      out,
+      "--patch-sizes",
+      "1,2",
+      "--rotations",
+      "0,90",
+    ]);
+    assert.match(stdout, /dataset preparation/);
+    const patches = JSON.parse(
+      await readFile(path.join(out, "vpr", "manifest", "patches.json"), "utf8"),
+    );
+    const variants = JSON.parse(
+      await readFile(
+        path.join(out, "vpr", "manifest", "variants.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(patches.length, 5);
+    assert.equal(variants.length, 10);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
 });
 
 test("CLI rejects non-numeric jobs", async () => {

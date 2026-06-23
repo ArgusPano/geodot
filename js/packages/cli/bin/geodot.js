@@ -16,6 +16,7 @@ import {
   latlonToTile,
   loadGeoJSONPolygon,
   metersPerPixel,
+  prepareDataset,
 } from "@geodot/lib";
 
 const defaults = {
@@ -32,6 +33,10 @@ const defaults = {
   jobs: 16,
   noManifest: false,
   noDemo: false,
+  prepare: false,
+  patchSizes: [1, 2, 3, 4],
+  stride: 1,
+  rotations: [0, 90, 180, 270],
 };
 
 const flags = {
@@ -57,19 +62,24 @@ const flags = {
   "--out": "out",
   "-j": "jobs",
   "--jobs": "jobs",
+  "--patch-sizes": "patchSizes",
+  "--stride": "stride",
+  "--rotations": "rotations",
 };
 
 const booleanFlags = {
   "--no-manifest": "noManifest",
   "--no-demo": "noDemo",
+  "--prepare": "prepare",
 };
 
-const integerOptions = new Set(["zoom", "cols", "rows", "jobs"]);
+const integerOptions = new Set(["zoom", "cols", "rows", "jobs", "stride"]);
 const ranges = {
   zoom: [0, 30],
   cols: [1, Number.MAX_SAFE_INTEGER],
   rows: [1, Number.MAX_SAFE_INTEGER],
   jobs: [1, Number.MAX_SAFE_INTEGER],
+  stride: [1, Number.MAX_SAFE_INTEGER],
 };
 
 function parseArgs(argv) {
@@ -94,6 +104,8 @@ function parseArgs(argv) {
       options[key] = argv[i + 1];
     } else if (key === "polygon") {
       options[key] = parsePolygon(argv[i + 1]);
+    } else if (key === "patchSizes" || key === "rotations") {
+      options[key] = parseIntegerList(argv[i + 1], argv[i]);
     } else {
       const value = Number(argv[i + 1]);
       if (!Number.isFinite(value)) {
@@ -135,9 +147,24 @@ function parsePolygon(value) {
   return points;
 }
 
+function parseIntegerList(value, flag) {
+  const numbers = value.split(",").filter(Boolean).map(Number);
+  if (
+    numbers.length === 0 ||
+    numbers.some((number) => !Number.isInteger(number))
+  ) {
+    console.error(
+      `${flag} requires a comma-separated integer list, got ${value}`,
+    );
+    usage();
+    process.exit(1);
+  }
+  return numbers;
+}
+
 function usage() {
   console.log(
-    'Usage: geodot [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--no-manifest] [--no-demo]\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
+    'Usage: geodot [--prepare] [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--patch-sizes list] [--stride n] [--rotations list] [--no-manifest] [--no-demo]\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
   );
 }
 
@@ -238,6 +265,16 @@ function openBrowser(url) {
 
 async function runDownload() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.prepare) {
+    const report = await prepareDataset(options);
+    console.log("\n  geodot - dataset preparation");
+    console.log("  -------------------------------------");
+    console.log(`  Tiles:    ${report.tiles}`);
+    console.log(`  Patches:  ${report.patches}`);
+    console.log(`  Variants: ${report.variants}`);
+    console.log(`  Output:   ${report.path}`);
+    return;
+  }
   if (options.geojson && !options.polygon) {
     options.polygon = await loadGeoJSONPolygon(options.geojson);
   }

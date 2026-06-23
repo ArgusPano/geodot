@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const TILE_SIZE = 256;
@@ -126,6 +126,76 @@ export function tilePath(out, tile) {
     String(tile.x),
     `${tile.y}.jpg`,
   );
+}
+
+export async function prepareDataset(options = {}) {
+  const config = {
+    out: "data",
+    patchSizes: [1, 2, 3, 4],
+    stride: 1,
+    rotations: [0, 90, 180, 270],
+    ...options,
+  };
+  validatePrepareOptions(config);
+  const tiles = await discoverTiles(config.out);
+  const tileIds = new Map(
+    tiles.map((tile) => [`${tile.z}/${tile.x}/${tile.y}`, tile.tile_id]),
+  );
+  const patches = buildPatches(tiles, tileIds, config);
+  const variants = patches.flatMap((patch) =>
+    config.rotations.map((rotation) => ({
+      variant_id: `${patch.patch_id}_r${rotation}`,
+      patch_id: patch.patch_id,
+      rotation_deg: rotation,
+      descriptor_id: null,
+      index_id: null,
+    })),
+  );
+  const root = path.join(config.out, "vpr");
+  const manifest = path.join(root, "manifest");
+  const configDir = path.join(root, "config");
+  await mkdir(manifest, { recursive: true });
+  await mkdir(configDir, { recursive: true });
+  await writeFile(
+    path.join(manifest, "tiles.json"),
+    JSON.stringify(tiles, null, 2),
+  );
+  await writeFile(
+    path.join(manifest, "patches.json"),
+    JSON.stringify(patches, null, 2),
+  );
+  await writeFile(
+    path.join(manifest, "variants.json"),
+    JSON.stringify(variants, null, 2),
+  );
+  await writeFile(
+    path.join(configDir, "dataset.json"),
+    JSON.stringify(
+      {
+        profile: "aerial-vpr-default",
+        tile_root: "tiles/{z}/{x}/{y}.jpg",
+        mode: "virtual",
+        tile_size: TILE_SIZE,
+        patch_sizes: config.patchSizes,
+        stride: config.stride,
+        rotations: config.rotations,
+        appearance: [],
+        counts: {
+          tiles: tiles.length,
+          patches: patches.length,
+          variants: variants.length,
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  return {
+    tiles: tiles.length,
+    patches: patches.length,
+    variants: variants.length,
+    path: root,
+  };
 }
 
 export async function download(options = {}) {
@@ -383,6 +453,149 @@ function manifestBounds(tile) {
     lat_max: bounds.latMax,
     lon_max: bounds.lonMax,
   };
+}
+
+function validatePrepareOptions(options) {
+  validateIntegerRange("stride", options.stride, 1, Number.MAX_SAFE_INTEGER);
+  if (!Array.isArray(options.patchSizes) || options.patchSizes.length === 0) {
+    throw new TypeError("patchSizes must not be empty");
+  }
+  if (!Array.isArray(options.rotations) || options.rotations.length === 0) {
+    throw new TypeError("rotations must not be empty");
+  }
+  for (const size of options.patchSizes) {
+    validateIntegerRange("patchSizes", size, 1, Number.MAX_SAFE_INTEGER);
+  }
+  for (const rotation of options.rotations) {
+    validateIntegerRange("rotations", rotation, 0, 359);
+  }
+}
+
+async function discoverTiles(out) {
+  const root = path.join(out, "tiles");
+  const files = await listFiles(root).catch((error) => {
+    if (error.code === "ENOENT")
+      throw new Error(`tile directory not found: ${root}`);
+    throw error;
+  });
+  const tiles = [];
+  for (const file of files.sort()) {
+    if (!file.endsWith(".jpg")) continue;
+    const relative = path.relative(root, file);
+    const [zText, xText, yFile] = relative.split(path.sep);
+    if (!zText || !xText || !yFile) continue;
+    const z = Number(zText);
+    const x = Number(xText);
+    const y = Number(path.basename(yFile, ".jpg"));
+    if (![z, x, y].every(Number.isInteger) || z < 0 || z > MAX_ZOOM) continue;
+    const maxTile = 2 ** z;
+    if (x < 0 || x >= maxTile || y < 0 || y >= maxTile) continue;
+    const bounds = tileBounds({ x, y, z });
+    tiles.push({
+      tile_id: `z${z}_x${x}_y${y}`,
+      z,
+      x,
+      y,
+      path: path.relative(out, file),
+      pixel_width: TILE_SIZE,
+      pixel_height: TILE_SIZE,
+      lon_min: bounds.lonMin,
+      lat_min: bounds.latMin,
+      lon_max: bounds.lonMax,
+      lat_max: bounds.latMax,
+      center_lon: (bounds.lonMin + bounds.lonMax) / 2,
+      center_lat: (bounds.latMin + bounds.latMax) / 2,
+    });
+  }
+  if (tiles.length === 0) throw new Error(`no valid tiles found under ${root}`);
+  return tiles;
+}
+
+async function listFiles(root) {
+  const entries = await readdir(root, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const file = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFiles(file)));
+    } else if (entry.isFile()) {
+      files.push(file);
+    }
+  }
+  return files;
+}
+
+function buildPatches(tiles, tileIds, options) {
+  const byZoom = new Map();
+  for (const tile of tiles) {
+    if (!byZoom.has(tile.z)) byZoom.set(tile.z, []);
+    byZoom.get(tile.z).push(tile);
+  }
+  const patches = [];
+  for (const [z, zoomTiles] of [...byZoom.entries()].sort(
+    ([a], [b]) => a - b,
+  )) {
+    const xs = zoomTiles.map((tile) => tile.x);
+    const ys = zoomTiles.map((tile) => tile.y);
+    for (const size of [...new Set(options.patchSizes)].sort((a, b) => a - b)) {
+      for (
+        let y = Math.min(...ys);
+        y <= Math.max(...ys) - size + 1;
+        y += options.stride
+      ) {
+        for (
+          let x = Math.min(...xs);
+          x <= Math.max(...xs) - size + 1;
+          x += options.stride
+        ) {
+          const sourceTiles = [];
+          for (let sourceY = y; sourceY < y + size; sourceY += 1) {
+            for (let sourceX = x; sourceX < x + size; sourceX += 1) {
+              sourceTiles.push(tileIds.get(`${z}/${sourceX}/${sourceY}`));
+            }
+          }
+          if (sourceTiles.some((tileId) => tileId === undefined)) continue;
+          const topLeft = tileBounds({ x, y, z });
+          const bottomRight = tileBounds({
+            x: x + size - 1,
+            y: y + size - 1,
+            z,
+          });
+          const lonMin = topLeft.lonMin;
+          const latMin = bottomRight.latMin;
+          const lonMax = bottomRight.lonMax;
+          const latMax = topLeft.latMax;
+          const patchId = `z${z}_x${x}-${x + size - 1}_y${y}-${y + size - 1}_s${size}`;
+          patches.push({
+            patch_id: patchId,
+            z,
+            source_x_min: x,
+            source_x_max: x + size - 1,
+            source_y_min: y,
+            source_y_max: y + size - 1,
+            source_tiles: sourceTiles,
+            pixel_width: TILE_SIZE * size,
+            pixel_height: TILE_SIZE * size,
+            lon_min: lonMin,
+            lat_min: latMin,
+            lon_max: lonMax,
+            lat_max: latMax,
+            center_lon: (lonMin + lonMax) / 2,
+            center_lat: (latMin + latMax) / 2,
+            mosaic_size_tiles: size,
+            stride_tiles: options.stride,
+            scale_profile: `z${z}_${size}x${size}`,
+            image_path_or_virtual_spec: {
+              type: "virtual_mosaic",
+              tile_ids: sourceTiles,
+              layout: [size, size],
+            },
+          });
+        }
+      }
+    }
+  }
+  return patches;
 }
 
 function* tileGridIterator(lat, lon, zoom, cols, rows, onProgress) {

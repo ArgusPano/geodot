@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,6 +13,7 @@ import {
   tileGridBetween,
   tileGridForPolygon,
   tilePath,
+  prepareDataset,
 } from "@geodot/lib";
 
 const geojson = {
@@ -174,6 +175,38 @@ test("download can skip demo", async () => {
     await assert.rejects(() => readFile(path.join(out, "index.html"), "utf8"));
   } finally {
     globalThis.fetch = originalFetch;
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("prepareDataset writes virtual VPR manifests", async () => {
+  const out = await mkdtemp(path.join(tmpdir(), "geodot-prepare-"));
+  try {
+    for (const x of [1, 2]) {
+      for (const y of [3, 4]) {
+        const file = path.join(out, "tiles", "3", String(x), `${y}.jpg`);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, Buffer.alloc(128));
+      }
+    }
+    const report = await prepareDataset({
+      out,
+      patchSizes: [1, 2],
+      rotations: [0, 90],
+    });
+    assert.equal(report.tiles, 4);
+    assert.equal(report.patches, 5);
+    assert.equal(report.variants, 10);
+    const patches = JSON.parse(
+      await readFile(path.join(out, "vpr", "manifest", "patches.json"), "utf8"),
+    );
+    const mosaic = patches.find((patch) => patch.mosaic_size_tiles === 2);
+    assert.equal(mosaic.source_x_min, 1);
+    assert.equal(mosaic.source_x_max, 2);
+    assert.equal(mosaic.source_y_min, 3);
+    assert.equal(mosaic.source_y_max, 4);
+    assert.equal(mosaic.image_path_or_virtual_spec.type, "virtual_mosaic");
+  } finally {
     await rm(out, { recursive: true, force: true });
   }
 });

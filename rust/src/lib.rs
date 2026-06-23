@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use futures::stream::{self, StreamExt};
 use rand::seq::SliceRandom;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -95,6 +96,33 @@ pub struct DownloadReport {
     pub center: Tile,
     pub tiles: Vec<DownloadedTile>,
     pub failed: Vec<Tile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrepareOptions {
+    pub out: PathBuf,
+    pub patch_sizes: Vec<u32>,
+    pub stride: u32,
+    pub rotations: Vec<u32>,
+}
+
+impl Default for PrepareOptions {
+    fn default() -> Self {
+        Self {
+            out: PathBuf::from("data"),
+            patch_sizes: vec![1, 2, 3, 4],
+            stride: 1,
+            rotations: vec![0, 90, 180, 270],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PrepareReport {
+    pub tiles: usize,
+    pub patches: usize,
+    pub variants: usize,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +278,203 @@ fn tile_grid_for_polygon_iter(
     )
 }
 
+fn discover_tiles(out: &Path) -> Result<Vec<serde_json::Value>> {
+    let root = out.join("tiles");
+    if !root.exists() {
+        bail!("tile directory not found: {}", root.display());
+    }
+    let mut files = Vec::new();
+    collect_files(&root, &mut files)?;
+    files.sort();
+
+    let mut tiles = Vec::new();
+    for file in files {
+        if file.extension().and_then(|value| value.to_str()) != Some("jpg") {
+            continue;
+        }
+        let relative = match file.strip_prefix(&root) {
+            Ok(relative) => relative,
+            Err(_) => continue,
+        };
+        let parts: Vec<_> = relative.components().collect();
+        if parts.len() != 3 {
+            continue;
+        }
+        let z = parts[0].as_os_str().to_string_lossy().parse::<u32>();
+        let x = parts[1].as_os_str().to_string_lossy().parse::<u32>();
+        let y = file
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .parse::<u32>();
+        let (Ok(z), Ok(x), Ok(y)) = (z, x, y) else {
+            continue;
+        };
+        if z > MAX_ZOOM {
+            continue;
+        }
+        let max_tile = 2u64.pow(z);
+        if x as u64 >= max_tile || y as u64 >= max_tile {
+            continue;
+        }
+        let tile = Tile { x, y, z };
+        let bounds = tile_bounds(tile);
+        tiles.push(serde_json::json!({
+            "tile_id": format!("z{z}_x{x}_y{y}"),
+            "z": z,
+            "x": x,
+            "y": y,
+            "path": file.strip_prefix(out).unwrap_or(&file).to_string_lossy(),
+            "pixel_width": TILE_SIZE,
+            "pixel_height": TILE_SIZE,
+            "lon_min": bounds.lon_min,
+            "lat_min": bounds.lat_min,
+            "lon_max": bounds.lon_max,
+            "lat_max": bounds.lat_max,
+            "center_lon": (bounds.lon_min + bounds.lon_max) / 2.0,
+            "center_lat": (bounds.lat_min + bounds.lat_max) / 2.0,
+        }));
+    }
+    if tiles.is_empty() {
+        bail!("no valid tiles found under {}", root.display());
+    }
+    Ok(tiles)
+}
+
+fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, files)?;
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn build_patches(
+    tiles: &[serde_json::Value],
+    tile_ids: &HashMap<(u32, u32, u32), String>,
+    options: &PrepareOptions,
+) -> Vec<serde_json::Value> {
+    let mut by_zoom: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+    for tile in tiles {
+        let Some(z) = tile["z"].as_u64().map(|value| value as u32) else {
+            continue;
+        };
+        let Some(x) = tile["x"].as_u64().map(|value| value as u32) else {
+            continue;
+        };
+        let Some(y) = tile["y"].as_u64().map(|value| value as u32) else {
+            continue;
+        };
+        by_zoom.entry(z).or_default().push((x, y));
+    }
+
+    let mut zooms: Vec<_> = by_zoom.keys().copied().collect();
+    zooms.sort_unstable();
+    let mut sizes = options.patch_sizes.clone();
+    sizes.sort_unstable();
+    sizes.dedup();
+
+    let mut patches = Vec::new();
+    for z in zooms {
+        let Some(zoom_tiles) = by_zoom.get(&z) else {
+            continue;
+        };
+        let Some(min_x) = zoom_tiles.iter().map(|(x, _)| *x).min() else {
+            continue;
+        };
+        let Some(max_x) = zoom_tiles.iter().map(|(x, _)| *x).max() else {
+            continue;
+        };
+        let Some(min_y) = zoom_tiles.iter().map(|(_, y)| *y).min() else {
+            continue;
+        };
+        let Some(max_y) = zoom_tiles.iter().map(|(_, y)| *y).max() else {
+            continue;
+        };
+        for size in &sizes {
+            if *size == 0 || max_x < min_x + size - 1 || max_y < min_y + size - 1 {
+                continue;
+            }
+            let mut y = min_y;
+            while y <= max_y - size + 1 {
+                let mut x = min_x;
+                while x <= max_x - size + 1 {
+                    let mut source_tiles = Vec::new();
+                    let mut complete = true;
+                    for source_y in y..y + size {
+                        for source_x in x..x + size {
+                            if let Some(tile_id) = tile_ids.get(&(z, source_x, source_y)) {
+                                source_tiles.push(tile_id.clone());
+                            } else {
+                                complete = false;
+                            }
+                        }
+                    }
+                    if complete {
+                        let top_left = tile_bounds(Tile { x, y, z });
+                        let bottom_right = tile_bounds(Tile {
+                            x: x + size - 1,
+                            y: y + size - 1,
+                            z,
+                        });
+                        let lon_min = top_left.lon_min;
+                        let lat_min = bottom_right.lat_min;
+                        let lon_max = bottom_right.lon_max;
+                        let lat_max = top_left.lat_max;
+                        let patch_id = format!(
+                            "z{z}_x{}-{}_y{}-{}_s{}",
+                            x,
+                            x + size - 1,
+                            y,
+                            y + size - 1,
+                            size
+                        );
+                        patches.push(serde_json::json!({
+                            "patch_id": patch_id,
+                            "z": z,
+                            "source_x_min": x,
+                            "source_x_max": x + size - 1,
+                            "source_y_min": y,
+                            "source_y_max": y + size - 1,
+                            "source_tiles": source_tiles,
+                            "pixel_width": TILE_SIZE * size,
+                            "pixel_height": TILE_SIZE * size,
+                            "lon_min": lon_min,
+                            "lat_min": lat_min,
+                            "lon_max": lon_max,
+                            "lat_max": lat_max,
+                            "center_lon": (lon_min + lon_max) / 2.0,
+                            "center_lat": (lat_min + lat_max) / 2.0,
+                            "mosaic_size_tiles": size,
+                            "stride_tiles": options.stride,
+                            "scale_profile": format!("z{z}_{size}x{size}"),
+                            "image_path_or_virtual_spec": {
+                                "type": "virtual_mosaic",
+                                "tile_ids": source_tiles,
+                                "layout": [size, size],
+                            },
+                        }));
+                    }
+                    x = match x.checked_add(options.stride) {
+                        Some(next) => next,
+                        None => break,
+                    };
+                }
+                y = match y.checked_add(options.stride) {
+                    Some(next) => next,
+                    None => break,
+                };
+            }
+        }
+    }
+    patches
+}
+
 pub fn validate_options(options: &DownloadOptions) -> Result<()> {
     validate_finite_number("lat", options.lat)?;
     validate_finite_number("lon", options.lon)?;
@@ -274,6 +499,25 @@ pub fn validate_options(options: &DownloadOptions) -> Result<()> {
     }
     if options.jobs == 0 {
         bail!("jobs must be an integer at least 1");
+    }
+    Ok(())
+}
+
+pub fn validate_prepare_options(options: &PrepareOptions) -> Result<()> {
+    if options.patch_sizes.is_empty() {
+        bail!("patch_sizes must not be empty");
+    }
+    if options.rotations.is_empty() {
+        bail!("rotations must not be empty");
+    }
+    if options.stride == 0 {
+        bail!("stride must be an integer at least 1");
+    }
+    if options.patch_sizes.contains(&0) {
+        bail!("patch_sizes must be an integer at least 1");
+    }
+    if options.rotations.iter().any(|rotation| *rotation > 359) {
+        bail!("rotations must be an integer from 0 to 359");
     }
     Ok(())
 }
@@ -351,6 +595,84 @@ pub fn tile_path(out: impl AsRef<Path>, tile: Tile) -> PathBuf {
         .join(tile.z.to_string())
         .join(tile.x.to_string())
         .join(format!("{}.jpg", tile.y))
+}
+
+pub fn prepare_dataset(options: PrepareOptions) -> Result<PrepareReport> {
+    validate_prepare_options(&options)?;
+    let tiles = discover_tiles(&options.out)?;
+    let tile_ids: HashMap<(u32, u32, u32), String> = tiles
+        .iter()
+        .filter_map(|tile| {
+            Some((
+                (
+                    tile.get("z")?.as_u64()? as u32,
+                    tile.get("x")?.as_u64()? as u32,
+                    tile.get("y")?.as_u64()? as u32,
+                ),
+                tile.get("tile_id")?.as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    let patches = build_patches(&tiles, &tile_ids, &options);
+    let variants: Vec<_> = patches
+        .iter()
+        .flat_map(|patch| {
+            let patch_id = patch["patch_id"].as_str().unwrap_or_default().to_string();
+            options.rotations.iter().map(move |rotation| {
+                let patch_id = patch_id.clone();
+                serde_json::json!({
+                    "variant_id": format!("{patch_id}_r{rotation}"),
+                    "patch_id": patch_id,
+                    "rotation_deg": rotation,
+                    "descriptor_id": null,
+                    "index_id": null,
+                })
+            })
+        })
+        .collect();
+
+    let root = options.out.join("vpr");
+    let manifest = root.join("manifest");
+    let config = root.join("config");
+    fs::create_dir_all(&manifest)?;
+    fs::create_dir_all(&config)?;
+    fs::write(
+        manifest.join("tiles.json"),
+        serde_json::to_vec_pretty(&tiles)?,
+    )?;
+    fs::write(
+        manifest.join("patches.json"),
+        serde_json::to_vec_pretty(&patches)?,
+    )?;
+    fs::write(
+        manifest.join("variants.json"),
+        serde_json::to_vec_pretty(&variants)?,
+    )?;
+    let dataset = serde_json::json!({
+        "profile": "aerial-vpr-default",
+        "tile_root": "tiles/{z}/{x}/{y}.jpg",
+        "mode": "virtual",
+        "tile_size": TILE_SIZE,
+        "patch_sizes": options.patch_sizes,
+        "stride": options.stride,
+        "rotations": options.rotations,
+        "appearance": [],
+        "counts": {
+            "tiles": tiles.len(),
+            "patches": patches.len(),
+            "variants": variants.len(),
+        },
+    });
+    fs::write(
+        config.join("dataset.json"),
+        serde_json::to_vec_pretty(&dataset)?,
+    )?;
+    Ok(PrepareReport {
+        tiles: tiles.len(),
+        patches: patches.len(),
+        variants: variants.len(),
+        path: root,
+    })
 }
 
 pub async fn download(options: DownloadOptions) -> Result<DownloadReport> {

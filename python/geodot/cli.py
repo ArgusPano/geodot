@@ -14,10 +14,12 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from .core import (
     Coordinate,
     DownloadOptions,
+    PrepareOptions,
     count_tiles_for_options,
     download,
     latlon_to_tile,
     meters_per_pixel,
+    prepare_dataset,
     resolve_options,
 )
 
@@ -43,12 +45,36 @@ def main() -> None:
     parser.add_argument("-r", "--rows", type=_positive_int, default=3, help="tile rows downward from center")
     parser.add_argument("-o", "--out", default="data", help="output directory")
     parser.add_argument("-j", "--jobs", type=_positive_int, default=16, help="max concurrent downloads")
+    parser.add_argument("--prepare", action="store_true", help="prepare a virtual VPR dataset from existing output tiles")
+    parser.add_argument("--patch-sizes", type=_parse_int_list, default="1,2,3,4", help="mosaic sizes in tiles for --prepare")
+    parser.add_argument("--stride", type=_positive_int, default=1, help="tile stride for --prepare mosaics")
+    parser.add_argument("--rotations", type=_parse_int_list, default="0,90,180,270", help="rotation variants for --prepare")
     parser.add_argument("--no-manifest", action="store_true", help="do not write manifest.json")
     parser.add_argument("--no-demo", action="store_true", help="do not write index.html")
     args = parser.parse_args()
 
+    if args.prepare:
+        report = prepare_dataset(
+            PrepareOptions(
+                out=args.out,
+                patch_sizes=tuple(args.patch_sizes),
+                stride=args.stride,
+                rotations=tuple(args.rotations),
+            )
+        )
+        print("\n  geodot - dataset preparation")
+        print("  -------------------------------------")
+        print(f"  Tiles:    {report.tiles}")
+        print(f"  Patches:  {report.patches}")
+        print(f"  Variants: {report.variants}")
+        print(f"  Output:   {report.path}")
+        return
+
     start = time.perf_counter()
-    options = resolve_options(DownloadOptions(**vars(args)))
+    download_args = vars(args).copy()
+    for key in ("prepare", "patch_sizes", "stride", "rotations"):
+        download_args.pop(key)
+    options = resolve_options(DownloadOptions(**download_args))
     center = latlon_to_tile(args.lat, args.lon, args.zoom)
     print("\n  geodot - satellite tiles")
     print("  -------------------------------------")
@@ -186,6 +212,16 @@ def _zoom(value: str) -> int:
     if number < 0 or number > 30:
         raise argparse.ArgumentTypeError("must be from 0 to 30")
     return number
+
+
+def _parse_int_list(value: str) -> list[int]:
+    try:
+        numbers = [int(item) for item in value.split(",") if item]
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"invalid integer list: {value}") from error
+    if not numbers:
+        raise argparse.ArgumentTypeError("must contain at least one integer")
+    return numbers
 
 
 if __name__ == "__main__":
