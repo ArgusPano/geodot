@@ -15,6 +15,7 @@ from typing import Any
 
 TILE_SIZE = 256
 MAX_ZOOM = 30
+SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
 USER_AGENTS = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -99,6 +100,13 @@ class PrepareReport:
     patches: int
     variants: int
     path: str
+
+
+@dataclass(frozen=True)
+class RenderReport:
+    source_path: str
+    output_path: str
+    bytes: int
 
 
 def latlon_to_tile(lat: float, lon: float, z: int) -> Tile:
@@ -305,10 +313,13 @@ def prepare_dataset(options: PrepareOptions | None = None) -> PrepareReport:
         "command": " ".join(sys.argv),
         "output_directory": str(out),
         "profile": "aerial-vpr-default",
-        "tile_roots": [f"{root}/{{z}}/{{x}}/{{y}}.jpg" for root in sorted({tile["root"] for tile in tiles})],
+        "tile_roots": [
+            f"{root}/{{z}}/{{x}}/{{y}}.{{jpg,jpeg,png,webp}}" for root in sorted({tile["root"] for tile in tiles})
+        ],
         "mode": "virtual",
         "tile_size": TILE_SIZE,
         "image_roots_detected": sorted({tile["root"] for tile in tiles}),
+        "supported_image_extensions": list(SUPPORTED_IMAGE_EXTENSIONS),
         "zoom_levels_detected": sorted({tile["z"] for tile in tiles}),
         "patch_sizes": patch_sizes,
         "stride": options.stride,
@@ -316,6 +327,7 @@ def prepare_dataset(options: PrepareOptions | None = None) -> PrepareReport:
         "auto400m": options.auto400m,
         "circular_crops_virtual": True,
         "images_modified": False,
+        "generated_images_default": False,
         "descriptors_computed": False,
         "indexes_built": False,
         "appearance": [],
@@ -323,6 +335,42 @@ def prepare_dataset(options: PrepareOptions | None = None) -> PrepareReport:
     }
     (config / "dataset.json").write_text(json.dumps(dataset, indent=2), encoding="utf-8")
     return PrepareReport(tiles=len(tiles), patches=len(patches), variants=len(variants), path=str(root))
+
+
+def render_dataset(
+    out: str | Path = "data",
+    *,
+    patch_id: str | None = None,
+    variant_id: str | None = None,
+    output: str | Path,
+) -> RenderReport:
+    if bool(patch_id) == bool(variant_id):
+        raise ValueError("provide exactly one of patch_id or variant_id")
+    root = Path(out)
+    manifest = root / "vpr" / "manifest"
+    patches = json.loads((manifest / "patches.json").read_text(encoding="utf-8"))
+    tiles = json.loads((manifest / "tiles.json").read_text(encoding="utf-8"))
+    if variant_id:
+        variants = json.loads((manifest / "variants.json").read_text(encoding="utf-8"))
+        variant = next((item for item in variants if item.get("variant_id") == variant_id), None)
+        if variant is None:
+            raise ValueError(f"variant not found: {variant_id}")
+        patch_id = variant["patch_id"]
+    patch = next((item for item in patches if item.get("patch_id") == patch_id), None)
+    if patch is None:
+        raise ValueError(f"patch not found: {patch_id}")
+    source_tile_ids = patch.get("source_tile_ids") or patch.get("source_tiles") or []
+    if len(source_tile_ids) != 1:
+        raise ValueError("render currently supports one-source-tile virtual patches only")
+    tile = next((item for item in tiles if item.get("tile_id") == source_tile_ids[0]), None)
+    if tile is None:
+        raise ValueError(f"source tile not found: {source_tile_ids[0]}")
+    source = root / tile["path"]
+    target = Path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    data = source.read_bytes()
+    target.write_bytes(data)
+    return RenderReport(source_path=str(source), output_path=str(target), bytes=len(data))
 
 
 def download(options: DownloadOptions | None = None) -> DownloadReport:
@@ -439,7 +487,7 @@ def _discover_tiles(out: Path) -> list[dict[str, Any]]:
         if not root.exists():
             continue
         role = "reference" if root_name == "tiles" else "query"
-        for file in sorted(root.rglob("*.jpg")):
+        for file in sorted(item for item in root.rglob("*") if item.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS):
             parsed = _parse_image_path(root, file)
             if parsed is None:
                 continue
@@ -451,6 +499,7 @@ def _discover_tiles(out: Path) -> list[dict[str, Any]]:
             bounds = tile_bounds(tile)
             tile_id = f"{root_name}_{capture_id}_z{z}_x{x}_y{y}"
             info = file.stat()
+            image_width, image_height, detected_format = _read_image_header(file)
             tiles.append(
                 {
                     "tile_id": tile_id,
@@ -460,16 +509,18 @@ def _discover_tiles(out: Path) -> list[dict[str, Any]]:
                     "z": z,
                     "x": x,
                     "y": y,
+                    "extension": file.suffix.lower().lstrip("."),
+                    "detected_format": detected_format,
                     "path": str(file.relative_to(out)),
                     "bbox": [bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max],
                     "center_lon": (bounds.lon_min + bounds.lon_max) / 2,
                     "center_lat": (bounds.lat_min + bounds.lat_max) / 2,
-                    "image_width": TILE_SIZE,
-                    "image_height": TILE_SIZE,
-                    "pixel_width": TILE_SIZE,
-                    "pixel_height": TILE_SIZE,
+                    "image_width": image_width or TILE_SIZE,
+                    "image_height": image_height or TILE_SIZE,
+                    "pixel_width": image_width or TILE_SIZE,
+                    "pixel_height": image_height or TILE_SIZE,
                     "bytes": info.st_size,
-                    "valid": True,
+                    "valid": image_width is not None and image_height is not None,
                     "lon_min": bounds.lon_min,
                     "lat_min": bounds.lat_min,
                     "lon_max": bounds.lon_max,
@@ -499,6 +550,51 @@ def _parse_image_path(root: Path, file: Path) -> tuple[str, int, int, int] | Non
     if not (0 <= z <= MAX_ZOOM):
         return None
     return capture_id, z, x, y
+
+
+def _read_image_header(file: Path) -> tuple[int | None, int | None, str | None]:
+    data = file.read_bytes()[:64]
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big"), "png"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return _read_webp_header(file)
+    if data.startswith(b"\xff\xd8"):
+        return _read_jpeg_header(file)
+    return None, None, None
+
+
+def _read_jpeg_header(file: Path) -> tuple[int | None, int | None, str | None]:
+    data = file.read_bytes()
+    index = 2
+    while index + 9 < len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        marker = data[index + 1]
+        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+            return (
+                int.from_bytes(data[index + 7 : index + 9], "big"),
+                int.from_bytes(data[index + 5 : index + 7], "big"),
+                "jpeg",
+            )
+        if index + 4 > len(data):
+            break
+        length = int.from_bytes(data[index + 2 : index + 4], "big")
+        index += 2 + max(length, 1)
+    return None, None, "jpeg"
+
+
+def _read_webp_header(file: Path) -> tuple[int | None, int | None, str | None]:
+    data = file.read_bytes()[:64]
+    chunk = data[12:16]
+    if chunk == b"VP8X" and len(data) >= 30:
+        width = int.from_bytes(data[24:27], "little") + 1
+        height = int.from_bytes(data[27:30], "little") + 1
+        return width, height, "webp"
+    if chunk == b"VP8L" and len(data) >= 25:
+        bits = int.from_bytes(data[21:25], "little")
+        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1, "webp"
+    return None, None, "webp"
 
 
 def _resolve_patch_sizes(tiles: list[dict[str, Any]], options: PrepareOptions) -> list[int]:
@@ -613,6 +709,10 @@ def _build_places(tiles: list[dict[str, Any]], patches: list[dict[str, Any]]) ->
                 "available_roots": [],
                 "available_captures": [],
                 "tile_ids": [],
+                "reference_available": False,
+                "query_available": False,
+                "reference_tile_ids": [],
+                "query_tile_ids": [],
                 "patch_ids": [],
                 "quality_summary": {"recommendation": "keep"},
             },
@@ -620,6 +720,12 @@ def _build_places(tiles: list[dict[str, Any]], patches: list[dict[str, Any]]) ->
         place["available_roots"].append(tile["root"])
         place["available_captures"].append(tile["capture_id"])
         place["tile_ids"].append(tile["tile_id"])
+        if tile["role"] == "reference":
+            place["reference_available"] = True
+            place["reference_tile_ids"].append(tile["tile_id"])
+        if tile["role"] == "query":
+            place["query_available"] = True
+            place["query_tile_ids"].append(tile["tile_id"])
     for patch in patches:
         key = (patch["z"], patch["x"], patch["y"])
         if key in grouped:

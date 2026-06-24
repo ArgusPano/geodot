@@ -1,3 +1,4 @@
+import base64
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -42,6 +43,10 @@ GEOJSON = {
         }
     ],
 }
+
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 
 
 def test_latlon_to_tile() -> None:
@@ -161,28 +166,34 @@ def test_prepare_dataset_writes_virtual_vpr_manifests(tmp_path: Path) -> None:
 
 
 def test_prepare_dataset_detects_drone_view_captures_and_metadata_only(tmp_path: Path) -> None:
-    original_bytes = b"x" * 128
-    paths = [
-        tmp_path / "tiles" / "18" / "158488" / "81979.jpg",
-        tmp_path / "drone-view" / "18" / "158488" / "81979.jpg",
-        tmp_path / "tiles" / "2021_summer" / "18" / "158489" / "81979.jpg",
-    ]
-    for path in paths:
+    paths = {
+        tmp_path / "tiles" / "18" / "140140" / "97408.jpg": TINY_PNG,
+        tmp_path / "drone-view" / "18" / "140140" / "97408.png": TINY_PNG,
+        tmp_path / "drone-view" / "18" / "140141" / "97408.jpeg": TINY_PNG,
+        tmp_path / "drone-view" / "18" / "140142" / "97408.webp": TINY_PNG,
+        tmp_path / "tiles" / "2021_summer" / "18" / "140143" / "97408.jpg": TINY_PNG,
+    }
+    for path, data in paths.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(original_bytes)
+        path.write_bytes(data)
 
     report = prepare_dataset(PrepareOptions(out=tmp_path))
 
-    assert report.tiles == 3
-    assert all(path.read_bytes() == original_bytes for path in paths)
+    assert report.tiles == 5
+    assert all(path.read_bytes() == data for path, data in paths.items())
     assert not (tmp_path / "vpr" / "descriptors").exists()
     assert not (tmp_path / "vpr" / "index").exists()
     assert not list((tmp_path / "vpr").rglob("*.jpg"))
+    assert not list((tmp_path / "vpr").rglob("*.png"))
+    assert not list((tmp_path / "vpr").rglob("*.webp"))
 
     tiles = json.loads((tmp_path / "vpr" / "manifest" / "tiles.json").read_text(encoding="utf-8"))
     assert {tile["root"] for tile in tiles} == {"tiles", "drone-view"}
     assert {tile["role"] for tile in tiles} == {"reference", "query"}
     assert {tile["capture_id"] for tile in tiles} == {"default", "2021_summer"}
+    assert {tile["extension"] for tile in tiles} == {"jpg", "png", "jpeg", "webp"}
+    assert {tile["detected_format"] for tile in tiles} == {"png"}
+    assert all(tile["image_width"] == 1 and tile["image_height"] == 1 for tile in tiles)
 
     patches = json.loads((tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8"))
     assert all(patch["virtual_compose_spec"]["type"] == "virtual_mosaic" for patch in patches)
@@ -195,19 +206,28 @@ def test_prepare_dataset_detects_drone_view_captures_and_metadata_only(tmp_path:
     assert all(variant["descriptor_id"] is None and variant["index_id"] is None for variant in variants)
 
     places = json.loads((tmp_path / "vpr" / "manifest" / "places.json").read_text(encoding="utf-8"))
-    matched = next(place for place in places if place["x"] == 158488 and place["y"] == 81979)
-    assert matched["place_id"] == "z18_x158488_y81979"
+    matched = next(place for place in places if place["x"] == 140140 and place["y"] == 97408)
+    assert matched["place_id"] == "z18_x140140_y97408"
     assert matched["available_roots"] == ["drone-view", "tiles"]
+    assert matched["reference_available"] is True
+    assert matched["query_available"] is True
+    assert matched["reference_tile_ids"] == ["tiles_default_z18_x140140_y97408"]
+    assert matched["query_tile_ids"] == ["drone-view_default_z18_x140140_y97408"]
+    query_only = next(place for place in places if place["x"] == 140141 and place["y"] == 97408)
+    assert query_only["reference_available"] is False
+    assert query_only["query_available"] is True
 
     quality = json.loads((tmp_path / "vpr" / "manifest" / "quality.json").read_text(encoding="utf-8"))
-    assert len(quality["tiles"]) == 3
-    assert all(item["recommendation"] == "keep" for item in quality["tiles"])
+    assert len(quality["tiles"]) == 5
+    assert all("recommendation" in item for item in quality["tiles"])
 
     dataset = json.loads((tmp_path / "vpr" / "config" / "dataset.json").read_text(encoding="utf-8"))
     assert dataset["images_modified"] is False
+    assert dataset["generated_images_default"] is False
     assert dataset["descriptors_computed"] is False
     assert dataset["indexes_built"] is False
     assert dataset["auto400m"] is True
+    assert dataset["supported_image_extensions"] == [".jpg", ".jpeg", ".png", ".webp"]
 
 
 def test_prepare_dataset_user_overrides_disable_auto400m(tmp_path: Path) -> None:

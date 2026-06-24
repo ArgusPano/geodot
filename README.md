@@ -127,7 +127,7 @@ geodot --prepare -o data --patch-sizes 1,2,3 --stride 1 --rotations 0,90,180,270
 
 `geodot --prepare --geojson ...` uses the normal GeoJSON tile download logic first, then immediately prepares the dataset. `geodot --prepare -o data` still only scans an existing local dataset and does not download anything.
 
-Preparation is metadata-only. It scans source images, validates coordinates, creates virtual patches/mosaics/variants, and writes manifests. It does not mutate source JPEGs, write cropped/rotated/resized/circular-masked/augmented images, compute descriptors, train models, or build ANN indexes.
+Preparation is metadata-only. It scans source images, validates coordinates, creates virtual patches/mosaics/variants, and writes manifests. It does not mutate source images, write cropped/rotated/resized/circular-masked/augmented images, compute descriptors, train models, or build ANN indexes.
 
 The same prepared dataset can be reused by external descriptor pipelines such as DINOv3 SAT, ResNet, VLAD, GeM, NetVLAD, steerable CNNs, or future descriptor models. Descriptor extraction should happen later in model-specific tools.
 
@@ -135,14 +135,32 @@ Preparation auto-detects these source image roots:
 
 ```text
 data/tiles/{z}/{x}/{y}.jpg
+data/tiles/{z}/{x}/{y}.jpeg
+data/tiles/{z}/{x}/{y}.png
+data/tiles/{z}/{x}/{y}.webp
 data/drone-view/{z}/{x}/{y}.jpg
+data/drone-view/{z}/{x}/{y}.jpeg
+data/drone-view/{z}/{x}/{y}.png
+data/drone-view/{z}/{x}/{y}.webp
 data/tiles/{capture_id}/{z}/{x}/{y}.jpg
 data/drone-view/{capture_id}/{z}/{x}/{y}.jpg
 ```
 
+Supported source extensions are `.jpg`, `.jpeg`, `.png`, and `.webp`. Preparation reads image headers to record dimensions and detected format, but it does not require the extension to match the encoded bytes and never rewrites or converts source images.
+
 If no capture folder is present, `capture_id` is `default`. `tiles` is treated as north-up reference imagery. `drone-view` is treated as query/drone imagery.
 
-`drone-view/{z}/{x}/{y}.jpg` assumes the drone image is already georeferenced to the corresponding Web Mercator tile location, for example by orthorectification or manual assignment to a known tile footprint. Zoom is a rough scale bucket, not UAV altitude. True altitude depends on camera FOV, sensor size, image resolution, pitch, terrain height, GSD, and whether the image is nadir or oblique.
+`drone-view/{z}/{x}/{y}` assumes the drone image is already georeferenced to the corresponding Web Mercator tile location, for example by orthorectification or manual assignment to a known tile footprint. Zoom is a rough scale bucket, not UAV altitude. True altitude depends on camera FOV, sensor size, image resolution, pitch, terrain height, GSD, and whether the image is nadir or oblique. True UAV altitude and pose need optional metadata outside this simple filename convention.
+
+Manual drone-view example using an externally supplied PNG:
+
+```bash
+mkdir -p data/drone-view/18/140140
+curl -L "https://i.imgur.com/Aw7aFQb.png" -o data/drone-view/18/140140/97408.png
+geodot --prepare -o data
+```
+
+Use `.png` for externally supplied PNG examples instead of saving PNG bytes under a `.jpg` filename.
 
 The default profile is conservative and geometric:
 
@@ -176,6 +194,15 @@ data/
 `tiles.json` contains one record per discovered source tile with tile ID, root, capture ID, role, path, z/x/y, image size, byte size, bbox, center lon/lat, and validity. `patches.json` contains one record per native tile or complete mosaic window with place ID, source tile IDs, pixel size, bbox, center lon/lat, estimated ground size, circular-crop availability, and a virtual compose spec. `variants.json` records virtual rotations with empty descriptor/index IDs so descriptor extraction can fill them later. `places.json` groups matching reference/query imagery by z/x/y location. `quality.json` contains conservative, non-destructive low-information labels from cheap image/file statistics.
 
 Mosaics, rotations, and circular crops are virtual by default. A patch points to source tile IDs and layout instructions instead of writing new JPEGs, keeping storage small and source tiles immutable.
+
+Use `geodot render` only for explicit debug previews:
+
+```bash
+geodot render -o data --patch-id <patch_id> --out preview.jpg
+geodot render -o data --variant-id <variant_id> --out preview.jpg
+```
+
+`render` writes exactly one requested preview file. It does not batch-render the dataset, modify source images, compute descriptors, or build indexes. The dependency-free renderer currently supports one-source-tile virtual patches; multi-tile mosaic rendering can be added later as an explicit preview feature.
 
 Run `geodot demo` to inspect the downloaded tiles as a MapLibre raster overlay on a satellite base map at their tile coordinates and zoom. The demo serves `{out}/index.html` and reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg`; it does not depend on `manifest.json`. Use the corner opacity control to compare the overlay against the base map. Zooming is disabled because the output folder only contains the downloaded zoom level.
 

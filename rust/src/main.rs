@@ -3,7 +3,7 @@ use clap::Parser;
 use geodot::{
     Coordinate, DownloadOptions, DownloadProgress, MAX_ZOOM, PrepareOptions, SelectionProgress,
     count_tiles_for_options_with_progress, download_with_progress, load_geojson_polygon,
-    meters_per_pixel, prepare_dataset, validate_options,
+    meters_per_pixel, prepare_dataset, render_dataset, validate_options,
 };
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -117,14 +117,45 @@ struct DemoArgs {
     no_open: bool,
 }
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "geodot render",
+    about = "Render one prepared patch or variant for debugging."
+)]
+struct RenderArgs {
+    /// Prepared dataset directory
+    #[arg(short, long = "output-dir", default_value = "data")]
+    out: PathBuf,
+
+    /// Patch ID to render
+    #[arg(long, conflicts_with = "variant_id")]
+    patch_id: Option<String>,
+
+    /// Variant ID to render
+    #[arg(long, conflicts_with = "patch_id")]
+    variant_id: Option<String>,
+
+    /// Preview image path to write
+    #[arg(long = "out")]
+    output: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut raw_args = std::env::args();
     let program = raw_args.next().unwrap_or_else(|| "geodot".to_string());
-    if raw_args.next().as_deref() == Some("demo") {
-        let args = std::iter::once(format!("{program} demo")).chain(raw_args);
-        serve_demo(DemoArgs::parse_from(args))?;
-        return Ok(());
+    match raw_args.next().as_deref() {
+        Some("demo") => {
+            let args = std::iter::once(format!("{program} demo")).chain(raw_args);
+            serve_demo(DemoArgs::parse_from(args))?;
+            return Ok(());
+        }
+        Some("render") => {
+            let args = std::iter::once(format!("{program} render")).chain(raw_args);
+            render_preview(RenderArgs::parse_from(args))?;
+            return Ok(());
+        }
+        _ => {}
     }
 
     let args = Args::parse();
@@ -243,6 +274,25 @@ async fn main() -> Result<()> {
         })?;
         print_prepare_report(&report);
     }
+    Ok(())
+}
+
+fn render_preview(args: RenderArgs) -> Result<()> {
+    if args.patch_id.is_none() && args.variant_id.is_none() {
+        return Err(anyhow!("provide --patch-id or --variant-id"));
+    }
+    let report = render_dataset(
+        args.out,
+        args.patch_id.as_deref(),
+        args.variant_id.as_deref(),
+        args.output,
+    )?;
+    println!();
+    println!("  geodot - render preview");
+    println!("  -------------------------------------");
+    println!("  Source: {}", report.source_path.display());
+    println!("  Output: {}", report.output_path.display());
+    println!("  Bytes:  {}", report.bytes);
     Ok(())
 }
 

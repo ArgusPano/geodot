@@ -20,6 +20,7 @@ from .core import (
     latlon_to_tile,
     meters_per_pixel,
     prepare_dataset,
+    render_dataset,
     resolve_options,
 )
 
@@ -27,6 +28,9 @@ from .core import (
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "demo":
         _demo(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "render":
+        _render(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(description="Download satellite map tiles (256x256 px).")
@@ -130,6 +134,26 @@ def _print_prepare_report(report) -> None:
     print(f"  Patches:  {report.patches}")
     print(f"  Variants: {report.variants}")
     print(f"  Output:   {report.path}")
+
+
+def _render(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(description="Render one prepared virtual patch or variant for debugging.")
+    parser.add_argument("-o", "--output-dir", dest="dataset_out", default="data", help="prepared dataset directory")
+    selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--patch-id", help="patch ID to render")
+    selector.add_argument("--variant-id", help="variant ID to render")
+    parser.add_argument(
+        "--out", "--output", "--preview", dest="output", required=True, help="preview image path to write"
+    )
+    args = parser.parse_args(argv)
+    report = render_dataset(
+        out=args.dataset_out, patch_id=args.patch_id, variant_id=args.variant_id, output=args.output
+    )
+    print("\n  geodot - render preview")
+    print("  -------------------------------------")
+    print(f"  Source: {report.source_path}")
+    print(f"  Output: {report.output_path}")
+    print(f"  Bytes:  {report.bytes}")
 
 
 def _progress_printer(phase: str, total: int | None = None):

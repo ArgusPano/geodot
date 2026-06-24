@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const TILE_SIZE = 256;
+export const SUPPORTED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 
 const USER_AGENTS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -199,12 +200,13 @@ export async function prepareDataset(options = {}) {
         profile: "aerial-vpr-default",
         tile_roots: [...new Set(tiles.map((tile) => tile.root))]
           .sort()
-          .map((root) => `${root}/{z}/{x}/{y}.jpg`),
+          .map((root) => `${root}/{z}/{x}/{y}.{jpg,jpeg,png,webp}`),
         mode: "virtual",
         tile_size: TILE_SIZE,
         image_roots_detected: [
           ...new Set(tiles.map((tile) => tile.root)),
         ].sort(),
+        supported_image_extensions: SUPPORTED_IMAGE_EXTENSIONS,
         zoom_levels_detected: [...new Set(tiles.map((tile) => tile.z))].sort(
           (a, b) => a - b,
         ),
@@ -214,6 +216,7 @@ export async function prepareDataset(options = {}) {
         auto400m: config.auto400m,
         circular_crops_virtual: true,
         images_modified: false,
+        generated_images_default: false,
         descriptors_computed: false,
         indexes_built: false,
         appearance: [],
@@ -234,6 +237,45 @@ export async function prepareDataset(options = {}) {
     variants: variants.length,
     path: root,
   };
+}
+
+export async function renderDataset(options = {}) {
+  const { out = "data", patchId, variantId, output } = options;
+  if (!output) throw new Error("output is required");
+  if (Boolean(patchId) === Boolean(variantId)) {
+    throw new Error("provide exactly one of patchId or variantId");
+  }
+  const manifest = path.join(out, "vpr", "manifest");
+  const patches = JSON.parse(
+    await readFile(path.join(manifest, "patches.json"), "utf8"),
+  );
+  const tiles = JSON.parse(
+    await readFile(path.join(manifest, "tiles.json"), "utf8"),
+  );
+  let selectedPatchId = patchId;
+  if (variantId) {
+    const variants = JSON.parse(
+      await readFile(path.join(manifest, "variants.json"), "utf8"),
+    );
+    const variant = variants.find((item) => item.variant_id === variantId);
+    if (!variant) throw new Error(`variant not found: ${variantId}`);
+    selectedPatchId = variant.patch_id;
+  }
+  const patch = patches.find((item) => item.patch_id === selectedPatchId);
+  if (!patch) throw new Error(`patch not found: ${selectedPatchId}`);
+  const sourceTileIds = patch.source_tile_ids ?? patch.source_tiles ?? [];
+  if (sourceTileIds.length !== 1) {
+    throw new Error(
+      "render currently supports one-source-tile virtual patches only",
+    );
+  }
+  const tile = tiles.find((item) => item.tile_id === sourceTileIds[0]);
+  if (!tile) throw new Error(`source tile not found: ${sourceTileIds[0]}`);
+  const source = path.join(out, tile.path);
+  const data = await readFile(source);
+  await mkdir(path.dirname(output), { recursive: true });
+  await writeFile(output, data);
+  return { sourcePath: source, outputPath: output, bytes: data.byteLength };
 }
 
 export async function download(options = {}) {
@@ -518,7 +560,8 @@ async function discoverTiles(out) {
       throw error;
     });
     for (const file of files.sort()) {
-      if (!file.endsWith(".jpg")) continue;
+      const extension = path.extname(file).toLowerCase();
+      if (!SUPPORTED_IMAGE_EXTENSIONS.includes(extension)) continue;
       const parsed = parseImagePath(root, file);
       if (!parsed) continue;
       const { captureId, z, x, y } = parsed;
@@ -526,6 +569,7 @@ async function discoverTiles(out) {
       if (x < 0 || x >= maxTile || y < 0 || y >= maxTile) continue;
       const bounds = tileBounds({ x, y, z });
       const info = await stat(file);
+      const image = await readImageHeader(file);
       tiles.push({
         tile_id: `${rootName}_${captureId}_z${z}_x${x}_y${y}`,
         root: rootName,
@@ -534,16 +578,18 @@ async function discoverTiles(out) {
         z,
         x,
         y,
+        extension: extension.slice(1),
+        detected_format: image.format,
         path: path.relative(out, file),
         bbox: [bounds.lonMin, bounds.latMin, bounds.lonMax, bounds.latMax],
         center_lon: (bounds.lonMin + bounds.lonMax) / 2,
         center_lat: (bounds.latMin + bounds.latMax) / 2,
-        image_width: TILE_SIZE,
-        image_height: TILE_SIZE,
-        pixel_width: TILE_SIZE,
-        pixel_height: TILE_SIZE,
+        image_width: image.width ?? TILE_SIZE,
+        image_height: image.height ?? TILE_SIZE,
+        pixel_width: image.width ?? TILE_SIZE,
+        pixel_height: image.height ?? TILE_SIZE,
         bytes: info.size,
-        valid: true,
+        valid: image.width !== undefined && image.height !== undefined,
         lon_min: bounds.lonMin,
         lat_min: bounds.latMin,
         lon_max: bounds.lonMax,
@@ -563,10 +609,80 @@ function parseImagePath(root, file) {
   const [captureId, zText, xText, yFile] = values;
   const z = Number(zText);
   const x = Number(xText);
-  const y = Number(path.basename(yFile, ".jpg"));
+  const y = Number(path.basename(yFile, path.extname(yFile)));
   if (![z, x, y].every(Number.isInteger) || z < 0 || z > MAX_ZOOM)
     return undefined;
   return { captureId, z, x, y };
+}
+
+async function readImageHeader(file) {
+  const data = await readFile(file);
+  if (
+    data
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) &&
+    data.length >= 24
+  ) {
+    return {
+      width: data.readUInt32BE(16),
+      height: data.readUInt32BE(20),
+      format: "png",
+    };
+  }
+  if (
+    data.subarray(0, 4).toString() === "RIFF" &&
+    data.subarray(8, 12).toString() === "WEBP"
+  ) {
+    return readWebPHeader(data);
+  }
+  if (data[0] === 0xff && data[1] === 0xd8) return readJPEGHeader(data);
+  return { width: undefined, height: undefined, format: undefined };
+}
+
+function readJPEGHeader(data) {
+  let index = 2;
+  while (index + 9 < data.length) {
+    if (data[index] !== 0xff) {
+      index += 1;
+      continue;
+    }
+    const marker = data[index + 1];
+    if (
+      [
+        0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce,
+        0xcf,
+      ].includes(marker)
+    ) {
+      return {
+        width: data.readUInt16BE(index + 7),
+        height: data.readUInt16BE(index + 5),
+        format: "jpeg",
+      };
+    }
+    if (index + 4 > data.length) break;
+    index += 2 + Math.max(data.readUInt16BE(index + 2), 1);
+  }
+  return { width: undefined, height: undefined, format: "jpeg" };
+}
+
+function readWebPHeader(data) {
+  const chunk = data.subarray(12, 16).toString();
+  if (chunk === "VP8X" && data.length >= 30) {
+    return {
+      width: data.readUIntLE(24, 3) + 1,
+      height: data.readUIntLE(27, 3) + 1,
+      format: "webp",
+    };
+  }
+  if (chunk === "VP8L" && data.length >= 25) {
+    const bits = data.readUInt32LE(21);
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >> 14) & 0x3fff) + 1,
+      format: "webp",
+    };
+  }
+  return { width: undefined, height: undefined, format: "webp" };
 }
 
 function resolvePatchSizes(tiles, options) {
@@ -710,6 +826,10 @@ function buildPlaces(tiles, patches) {
         available_roots: [],
         available_captures: [],
         tile_ids: [],
+        reference_available: false,
+        query_available: false,
+        reference_tile_ids: [],
+        query_tile_ids: [],
         patch_ids: [],
         quality_summary: { recommendation: "keep" },
       });
@@ -718,6 +838,14 @@ function buildPlaces(tiles, patches) {
     place.available_roots.push(tile.root);
     place.available_captures.push(tile.capture_id);
     place.tile_ids.push(tile.tile_id);
+    if (tile.role === "reference") {
+      place.reference_available = true;
+      place.reference_tile_ids.push(tile.tile_id);
+    }
+    if (tile.role === "query") {
+      place.query_available = true;
+      place.query_tile_ids.push(tile.tile_id);
+    }
   }
   for (const patch of patches) {
     places

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -12,6 +13,9 @@ from pathlib import Path
 from geodot import DownloadOptions, download
 
 TILE_BYTES = b"x" * 128
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 GEOJSON = {
     "type": "FeatureCollection",
     "features": [
@@ -158,6 +162,45 @@ def test_cli_prepare_existing_tiles(tmp_path: Path) -> None:
     variants = json.loads((tmp_path / "vpr" / "manifest" / "variants.json").read_text(encoding="utf-8"))
     assert len(patches) == 5
     assert len(variants) == 10
+
+
+def test_cli_render_writes_only_requested_preview(tmp_path: Path) -> None:
+    source = tmp_path / "drone-view" / "18" / "140140" / "97408.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(TINY_PNG)
+    subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "--prepare", "-o", str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    preview = tmp_path / "preview.png"
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "geodot.cli",
+            "render",
+            "-o",
+            str(tmp_path),
+            "--patch-id",
+            "drone-view_default_z18_x140140-140140_y97408-97408_s1",
+            "--out",
+            str(preview),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert preview.read_bytes() == TINY_PNG
+    assert source.read_bytes() == TINY_PNG
+    assert not (tmp_path / "vpr" / "descriptors").exists()
+    assert not (tmp_path / "vpr" / "index").exists()
+    assert not list((tmp_path / "vpr").rglob("*.jpg"))
+    assert not list((tmp_path / "vpr").rglob("*.png"))
+    assert not list((tmp_path / "vpr").rglob("*.webp"))
 
 
 def test_cli_download_accepts_geojson_url(tmp_path: Path) -> None:

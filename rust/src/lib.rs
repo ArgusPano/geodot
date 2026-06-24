@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const TILE_SIZE: u32 = 256;
 pub const MAX_ZOOM: u32 = 30;
+pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".webp"];
 
 const USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -125,6 +126,13 @@ pub struct PrepareReport {
     pub patches: usize,
     pub variants: usize,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RenderReport {
+    pub source_path: PathBuf,
+    pub output_path: PathBuf,
+    pub bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,7 +305,12 @@ fn discover_tiles(out: &Path) -> Result<Vec<serde_json::Value>> {
         collect_files(&root, &mut files)?;
         files.sort();
         for file in files {
-            if file.extension().and_then(|value| value.to_str()) != Some("jpg") {
+            let extension = file
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| format!(".{value}").to_ascii_lowercase())
+                .unwrap_or_default();
+            if !SUPPORTED_IMAGE_EXTENSIONS.contains(&extension.as_str()) {
                 continue;
             }
             let Some((capture_id, z, x, y)) = parse_image_path(&root, &file) else {
@@ -312,6 +325,7 @@ fn discover_tiles(out: &Path) -> Result<Vec<serde_json::Value>> {
             let bytes = fs::metadata(&file)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
+            let (image_width, image_height, detected_format) = read_image_header(&file);
             tiles.push(serde_json::json!({
                 "tile_id": format!("{root_name}_{capture_id}_z{z}_x{x}_y{y}"),
                 "root": root_name,
@@ -320,16 +334,18 @@ fn discover_tiles(out: &Path) -> Result<Vec<serde_json::Value>> {
                 "z": z,
                 "x": x,
                 "y": y,
+                "extension": extension.trim_start_matches('.'),
+                "detected_format": detected_format,
                 "path": file.strip_prefix(out).unwrap_or(&file).to_string_lossy(),
                 "bbox": [bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max],
                 "center_lon": (bounds.lon_min + bounds.lon_max) / 2.0,
                 "center_lat": (bounds.lat_min + bounds.lat_max) / 2.0,
-                "image_width": TILE_SIZE,
-                "image_height": TILE_SIZE,
-                "pixel_width": TILE_SIZE,
-                "pixel_height": TILE_SIZE,
+                "image_width": image_width.unwrap_or(TILE_SIZE),
+                "image_height": image_height.unwrap_or(TILE_SIZE),
+                "pixel_width": image_width.unwrap_or(TILE_SIZE),
+                "pixel_height": image_height.unwrap_or(TILE_SIZE),
                 "bytes": bytes,
-                "valid": true,
+                "valid": image_width.is_some() && image_height.is_some(),
                 "lon_min": bounds.lon_min,
                 "lat_min": bounds.lat_min,
                 "lon_max": bounds.lon_max,
@@ -366,6 +382,81 @@ fn parse_image_path(root: &Path, file: &Path) -> Option<(String, u32, u32, u32)>
         return None;
     }
     Some((capture_id, z, x, y))
+}
+
+fn read_image_header(file: &Path) -> (Option<u32>, Option<u32>, Option<&'static str>) {
+    let Ok(data) = fs::read(file) else {
+        return (None, None, None);
+    };
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.len() >= 24 {
+        return (
+            Some(u32::from_be_bytes([data[16], data[17], data[18], data[19]])),
+            Some(u32::from_be_bytes([data[20], data[21], data[22], data[23]])),
+            Some("png"),
+        );
+    }
+    if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+        return read_webp_header(&data);
+    }
+    if data.starts_with(&[0xff, 0xd8]) {
+        return read_jpeg_header(&data);
+    }
+    (None, None, None)
+}
+
+fn read_jpeg_header(data: &[u8]) -> (Option<u32>, Option<u32>, Option<&'static str>) {
+    let mut index = 2;
+    while index + 9 < data.len() {
+        if data[index] != 0xff {
+            index += 1;
+            continue;
+        }
+        let marker = data[index + 1];
+        if matches!(
+            marker,
+            0xc0 | 0xc1
+                | 0xc2
+                | 0xc3
+                | 0xc5
+                | 0xc6
+                | 0xc7
+                | 0xc9
+                | 0xca
+                | 0xcb
+                | 0xcd
+                | 0xce
+                | 0xcf
+        ) {
+            let height = u16::from_be_bytes([data[index + 5], data[index + 6]]) as u32;
+            let width = u16::from_be_bytes([data[index + 7], data[index + 8]]) as u32;
+            return (Some(width), Some(height), Some("jpeg"));
+        }
+        if index + 4 > data.len() {
+            break;
+        }
+        let length = u16::from_be_bytes([data[index + 2], data[index + 3]]) as usize;
+        index += 2 + length.max(1);
+    }
+    (None, None, Some("jpeg"))
+}
+
+fn read_webp_header(data: &[u8]) -> (Option<u32>, Option<u32>, Option<&'static str>) {
+    match data.get(12..16) {
+        Some(b"VP8X") if data.len() >= 30 => {
+            let width = u32::from_le_bytes([data[24], data[25], data[26], 0]) + 1;
+            let height = u32::from_le_bytes([data[27], data[28], data[29], 0]) + 1;
+            (Some(width), Some(height), Some("webp"))
+        }
+        Some(b"VP8L") if data.len() >= 25 => {
+            let bits = u32::from_le_bytes([data[21], data[22], data[23], data[24]]);
+            (
+                Some((bits & 0x3fff) + 1),
+                Some(((bits >> 14) & 0x3fff) + 1),
+                Some("webp"),
+            )
+        }
+        _ => (None, None, Some("webp")),
+    }
 }
 
 fn resolve_patch_sizes(tiles: &[serde_json::Value], options: &PrepareOptions) -> Vec<u32> {
@@ -578,6 +669,10 @@ fn build_places(
                 "available_roots": [],
                 "available_captures": [],
                 "tile_ids": [],
+                "reference_available": false,
+                "query_available": false,
+                "reference_tile_ids": [],
+                "query_tile_ids": [],
                 "patch_ids": [],
                 "quality_summary": { "recommendation": "keep" },
             })
@@ -594,6 +689,20 @@ fn build_places(
             .as_array_mut()
             .unwrap()
             .push(tile["tile_id"].clone());
+        if tile["role"].as_str() == Some("reference") {
+            place["reference_available"] = serde_json::Value::Bool(true);
+            place["reference_tile_ids"]
+                .as_array_mut()
+                .unwrap()
+                .push(tile["tile_id"].clone());
+        }
+        if tile["role"].as_str() == Some("query") {
+            place["query_available"] = serde_json::Value::Bool(true);
+            place["query_tile_ids"]
+                .as_array_mut()
+                .unwrap()
+                .push(tile["tile_id"].clone());
+        }
     }
     for patch in patches {
         let Some(z) = patch["z"].as_u64().map(|value| value as u32) else {
@@ -860,10 +969,11 @@ pub fn prepare_dataset(options: PrepareOptions) -> Result<PrepareReport> {
         "command": env::args().collect::<Vec<_>>().join(" "),
         "output_directory": options.out,
         "profile": "aerial-vpr-default",
-        "tile_roots": roots.iter().map(|root| format!("{root}/{{z}}/{{x}}/{{y}}.jpg")).collect::<Vec<_>>(),
+        "tile_roots": roots.iter().map(|root| format!("{root}/{{z}}/{{x}}/{{y}}.{{jpg,jpeg,png,webp}}")).collect::<Vec<_>>(),
         "mode": "virtual",
         "tile_size": TILE_SIZE,
         "image_roots_detected": roots,
+        "supported_image_extensions": SUPPORTED_IMAGE_EXTENSIONS,
         "zoom_levels_detected": zooms,
         "patch_sizes": patch_sizes,
         "stride": options.stride,
@@ -871,6 +981,7 @@ pub fn prepare_dataset(options: PrepareOptions) -> Result<PrepareReport> {
         "auto400m": options.auto400m,
         "circular_crops_virtual": true,
         "images_modified": false,
+        "generated_images_default": false,
         "descriptors_computed": false,
         "indexes_built": false,
         "appearance": [],
@@ -890,6 +1001,80 @@ pub fn prepare_dataset(options: PrepareOptions) -> Result<PrepareReport> {
         patches: patches.len(),
         variants: variants.len(),
         path: root,
+    })
+}
+
+pub fn render_dataset(
+    out: impl AsRef<Path>,
+    patch_id: Option<&str>,
+    variant_id: Option<&str>,
+    output: impl AsRef<Path>,
+) -> Result<RenderReport> {
+    if patch_id.is_some() == variant_id.is_some() {
+        bail!("provide exactly one of patch_id or variant_id");
+    }
+    let out = out.as_ref();
+    let manifest = out.join("vpr").join("manifest");
+    let patches: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest.join("patches.json"))?)?;
+    let tiles: serde_json::Value = serde_json::from_slice(&fs::read(manifest.join("tiles.json"))?)?;
+    let selected_patch_id = if let Some(variant_id) = variant_id {
+        let variants: serde_json::Value =
+            serde_json::from_slice(&fs::read(manifest.join("variants.json"))?)?;
+        variants
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item["variant_id"].as_str() == Some(variant_id))
+            })
+            .and_then(|item| item["patch_id"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("variant not found: {variant_id}"))?
+            .to_string()
+    } else {
+        patch_id.unwrap_or_default().to_string()
+    };
+    let patch = patches
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["patch_id"].as_str() == Some(selected_patch_id.as_str()))
+        })
+        .ok_or_else(|| anyhow::anyhow!("patch not found: {selected_patch_id}"))?;
+    let source_tile_ids = patch["source_tile_ids"]
+        .as_array()
+        .or_else(|| patch["source_tiles"].as_array())
+        .ok_or_else(|| anyhow::anyhow!("patch has no source tiles"))?;
+    if source_tile_ids.len() != 1 {
+        bail!("render currently supports one-source-tile virtual patches only");
+    }
+    let source_tile_id = source_tile_ids[0]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("source tile id is not a string"))?;
+    let tile = tiles
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["tile_id"].as_str() == Some(source_tile_id))
+        })
+        .ok_or_else(|| anyhow::anyhow!("source tile not found: {source_tile_id}"))?;
+    let source_path = out.join(
+        tile["path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("source tile has no path"))?,
+    );
+    let output_path = output.as_ref().to_path_buf();
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let data = fs::read(&source_path)?;
+    fs::write(&output_path, &data)?;
+    Ok(RenderReport {
+        source_path,
+        output_path,
+        bytes: data.len(),
     })
 }
 

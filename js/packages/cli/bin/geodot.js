@@ -17,6 +17,7 @@ import {
   loadGeoJSONPolygon,
   metersPerPixel,
   prepareDataset,
+  renderDataset,
 } from "@geodot/lib";
 
 const defaults = {
@@ -164,8 +165,55 @@ function parseIntegerList(value, flag) {
 
 function usage() {
   console.log(
-    'Usage: geodot [--prepare] [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--patch-sizes list] [--stride n] [--rotations list] [--no-manifest] [--no-demo]\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
+    'Usage: geodot [--prepare] [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--patch-sizes list] [--stride n] [--rotations list] [--no-manifest] [--no-demo]\n       geodot render -o data (--patch-id id | --variant-id id) --out preview.jpg\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
   );
+}
+
+function parseRenderArgs(argv) {
+  const options = {
+    out: "data",
+    output: undefined,
+    patchId: undefined,
+    variantId: undefined,
+  };
+  for (let i = 0; i < argv.length; ) {
+    const value = argv[i + 1];
+    if (argv[i] === "-h" || argv[i] === "--help") {
+      usage();
+      process.exit(0);
+    }
+    if (value === undefined) {
+      usage();
+      process.exit(1);
+    }
+    if (argv[i] === "-o") options.out = value;
+    else if (argv[i] === "--out" || argv[i] === "--output")
+      options.output = value;
+    else if (argv[i] === "--patch-id") options.patchId = value;
+    else if (argv[i] === "--variant-id") options.variantId = value;
+    else {
+      usage();
+      process.exit(1);
+    }
+    i += 2;
+  }
+  if (
+    !options.output ||
+    Boolean(options.patchId) === Boolean(options.variantId)
+  ) {
+    usage();
+    process.exit(1);
+  }
+  return options;
+}
+
+async function runRender(argv) {
+  const report = await renderDataset(parseRenderArgs(argv));
+  console.log("\n  geodot - render preview");
+  console.log("  -------------------------------------");
+  console.log(`  Source: ${report.sourcePath}`);
+  console.log(`  Output: ${report.outputPath}`);
+  console.log(`  Bytes:  ${report.bytes}`);
 }
 
 function parseDemoArgs(argv) {
@@ -373,6 +421,8 @@ function progressPrinter(phase, total) {
 
 if (process.argv[2] === "demo") {
   serveDemo(parseDemoArgs(process.argv.slice(3)));
+} else if (process.argv[2] === "render") {
+  await runRender(process.argv.slice(3));
 } else {
   await runDownload();
 }
