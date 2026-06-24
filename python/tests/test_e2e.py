@@ -187,6 +187,39 @@ def test_cli_download_accepts_geojson_url(tmp_path: Path) -> None:
     assert_download_output(tmp_path)
 
 
+def test_cli_prepare_with_geojson_downloads_then_prepares(tmp_path: Path) -> None:
+    with tile_server() as template:
+        geojson_url = template.split("/{z}", 1)[0] + "/area.geojson"
+        env = {**os.environ, "GEODOT_TILE_URL_TEMPLATE": template}
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geodot.cli",
+                "--prepare",
+                "--geojson",
+                geojson_url,
+                "-z",
+                "18",
+                "-j",
+                "1",
+                "-o",
+                str(tmp_path),
+            ],
+            check=True,
+            capture_output=True,
+            env=env,
+            text=True,
+        )
+
+    assert "satellite tiles" in result.stdout
+    assert "dataset preparation" in result.stdout
+    assert_download_output(tmp_path)
+    assert (tmp_path / "vpr" / "manifest" / "tiles.json").exists()
+    assert (tmp_path / "vpr" / "manifest" / "places.json").exists()
+    assert (tmp_path / "vpr" / "manifest" / "quality.json").exists()
+
+
 def test_cli_demo_help() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "geodot.cli", "demo", "--help"],

@@ -45,41 +45,37 @@ def main() -> None:
     parser.add_argument("-r", "--rows", type=_positive_int, default=3, help="tile rows downward from center")
     parser.add_argument("-o", "--out", default="data", help="output directory")
     parser.add_argument("-j", "--jobs", type=_positive_int, default=16, help="max concurrent downloads")
-    parser.add_argument(
-        "--prepare", action="store_true", help="prepare a virtual VPR dataset from existing output tiles"
-    )
-    parser.add_argument(
-        "--patch-sizes", type=_parse_int_list, default="1,2,3,4", help="mosaic sizes in tiles for --prepare"
-    )
+    parser.add_argument("--prepare", action="store_true", help="prepare a metadata-only virtual VPR dataset")
+    parser.add_argument("--patch-sizes", type=_parse_int_list, default=None, help="mosaic sizes in tiles for --prepare")
     parser.add_argument("--stride", type=_positive_int, default=1, help="tile stride for --prepare mosaics")
-    parser.add_argument(
-        "--rotations", type=_parse_int_list, default="0,90,180,270", help="rotation variants for --prepare"
-    )
+    parser.add_argument("--rotations", type=_parse_int_list, default=None, help="rotation variants for --prepare")
     parser.add_argument("--no-manifest", action="store_true", help="do not write manifest.json")
     parser.add_argument("--no-demo", action="store_true", help="do not write index.html")
     args = parser.parse_args()
-
-    if args.prepare:
-        report = prepare_dataset(
-            PrepareOptions(
-                out=args.out,
-                patch_sizes=tuple(args.patch_sizes),
-                stride=args.stride,
-                rotations=tuple(args.rotations),
-            )
-        )
-        print("\n  geodot - dataset preparation")
-        print("  -------------------------------------")
-        print(f"  Tiles:    {report.tiles}")
-        print(f"  Patches:  {report.patches}")
-        print(f"  Variants: {report.variants}")
-        print(f"  Output:   {report.path}")
-        return
 
     start = time.perf_counter()
     download_args = vars(args).copy()
     for key in ("prepare", "patch_sizes", "stride", "rotations"):
         download_args.pop(key)
+    should_download = bool(
+        args.geojson or args.polygon or args.bottom_right_lat is not None or args.bottom_right_lon is not None
+    )
+    if args.prepare and not should_download:
+        _print_prepare_report(
+            prepare_dataset(
+                PrepareOptions(
+                    out=args.out,
+                    patch_sizes=tuple(args.patch_sizes)
+                    if args.patch_sizes is not None
+                    else PrepareOptions().patch_sizes,
+                    stride=args.stride,
+                    rotations=tuple(args.rotations) if args.rotations is not None else PrepareOptions().rotations,
+                    auto400m=args.patch_sizes is None,
+                )
+            )
+        )
+        return
+
     options = resolve_options(DownloadOptions(**download_args))
     center = latlon_to_tile(args.lat, args.lon, args.zoom)
     print("\n  geodot - satellite tiles")
@@ -111,6 +107,29 @@ def main() -> None:
 
     print("\n  -------------------------------------")
     print(f"  {len(report.tiles)} tiles  |  {time.perf_counter() - start:.1f}s  |  failed: {len(report.failed)}")
+    if args.prepare:
+        _print_prepare_report(
+            prepare_dataset(
+                PrepareOptions(
+                    out=args.out,
+                    patch_sizes=tuple(args.patch_sizes)
+                    if args.patch_sizes is not None
+                    else PrepareOptions().patch_sizes,
+                    stride=args.stride,
+                    rotations=tuple(args.rotations) if args.rotations is not None else PrepareOptions().rotations,
+                    auto400m=args.patch_sizes is None,
+                )
+            )
+        )
+
+
+def _print_prepare_report(report) -> None:
+    print("\n  geodot - dataset preparation")
+    print("  -------------------------------------")
+    print(f"  Tiles:    {report.tiles}")
+    print(f"  Patches:  {report.patches}")
+    print(f"  Variants: {report.variants}")
+    print(f"  Output:   {report.path}")
 
 
 def _progress_printer(phase: str, total: int | None = None):

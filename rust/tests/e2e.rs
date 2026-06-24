@@ -141,6 +141,7 @@ fn library_and_cli_prepare_existing_tiles() {
         patch_sizes: vec![1, 2],
         stride: 1,
         rotations: vec![0, 90],
+        auto400m: false,
     })
     .unwrap();
     assert_eq!(report.tiles, 4);

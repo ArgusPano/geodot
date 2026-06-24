@@ -4,10 +4,12 @@ import json
 import math
 import os
 import random
+import sys
 import urllib.request
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,9 +87,10 @@ class DownloadReport:
 @dataclass(frozen=True)
 class PrepareOptions:
     out: str | Path = "data"
-    patch_sizes: tuple[int, ...] = (1, 2, 3, 4)
+    patch_sizes: tuple[int, ...] = (1, 2, 4)
     stride: int = 1
-    rotations: tuple[int, ...] = (0, 90, 180, 270)
+    rotations: tuple[int, ...] = (0, 45, 90, 135, 180, 225, 270, 315)
+    auto400m: bool = True
 
 
 @dataclass(frozen=True)
@@ -266,13 +269,19 @@ def prepare_dataset(options: PrepareOptions | None = None) -> PrepareReport:
     _validate_prepare_options(options)
     out = Path(options.out)
     tiles = _discover_tiles(out)
-    tile_ids = {(tile["z"], tile["x"], tile["y"]): tile["tile_id"] for tile in tiles}
-    patches = _build_patches(tiles, tile_ids, options)
+    patch_sizes = _resolve_patch_sizes(tiles, options)
+    tile_ids = {(tile["root"], tile["capture_id"], tile["z"], tile["x"], tile["y"]): tile["tile_id"] for tile in tiles}
+    patches = _build_patches(tiles, tile_ids, options, patch_sizes)
+    places = _build_places(tiles, patches)
+    quality = _build_quality(tiles, patches)
     variants = [
         {
             "variant_id": f"{patch['patch_id']}_r{rotation}",
             "patch_id": patch["patch_id"],
-            "rotation_deg": rotation,
+            "rotation_degrees": rotation,
+            "crop_shape": "square",
+            "virtual_only": True,
+            "image_written": False,
             "descriptor_id": None,
             "index_id": None,
         }
@@ -287,16 +296,30 @@ def prepare_dataset(options: PrepareOptions | None = None) -> PrepareReport:
     (manifest / "tiles.json").write_text(json.dumps(tiles, indent=2), encoding="utf-8")
     (manifest / "patches.json").write_text(json.dumps(patches, indent=2), encoding="utf-8")
     (manifest / "variants.json").write_text(json.dumps(variants, indent=2), encoding="utf-8")
+    (manifest / "places.json").write_text(json.dumps(places, indent=2), encoding="utf-8")
+    (manifest / "quality.json").write_text(json.dumps(quality, indent=2), encoding="utf-8")
     dataset = {
+        "schema_version": "1.0",
+        "geodot_version": "unknown",
+        "created_at": datetime.now(UTC).isoformat(),
+        "command": " ".join(sys.argv),
+        "output_directory": str(out),
         "profile": "aerial-vpr-default",
-        "tile_root": "tiles/{z}/{x}/{y}.jpg",
+        "tile_roots": [f"{root}/{{z}}/{{x}}/{{y}}.jpg" for root in sorted({tile["root"] for tile in tiles})],
         "mode": "virtual",
         "tile_size": TILE_SIZE,
-        "patch_sizes": list(options.patch_sizes),
+        "image_roots_detected": sorted({tile["root"] for tile in tiles}),
+        "zoom_levels_detected": sorted({tile["z"] for tile in tiles}),
+        "patch_sizes": patch_sizes,
         "stride": options.stride,
         "rotations": list(options.rotations),
+        "auto400m": options.auto400m,
+        "circular_crops_virtual": True,
+        "images_modified": False,
+        "descriptors_computed": False,
+        "indexes_built": False,
         "appearance": [],
-        "counts": {"tiles": len(tiles), "patches": len(patches), "variants": len(variants)},
+        "counts": {"tiles": len(tiles), "patches": len(patches), "variants": len(variants), "places": len(places)},
     }
     (config / "dataset.json").write_text(json.dumps(dataset, indent=2), encoding="utf-8")
     return PrepareReport(tiles=len(tiles), patches=len(patches), variants=len(variants), path=str(root))
@@ -408,66 +431,109 @@ def _validate_prepare_options(options: PrepareOptions) -> None:
 
 
 def _discover_tiles(out: Path) -> list[dict[str, Any]]:
-    root = out / "tiles"
-    if not root.exists():
-        raise FileNotFoundError(f"tile directory not found: {root}")
+    roots = [("tiles", out / "tiles"), ("drone-view", out / "drone-view")]
+    if not any(root.exists() for _name, root in roots):
+        raise FileNotFoundError(f"tile directory not found: {out / 'tiles'}")
     tiles: list[dict[str, Any]] = []
-    for file in sorted(root.rglob("*.jpg")):
-        try:
-            z = int(file.parent.parent.name)
-            x = int(file.parent.name)
-            y = int(file.stem)
-        except (ValueError, IndexError):
+    for root_name, root in roots:
+        if not root.exists():
             continue
-        if not (0 <= z <= MAX_ZOOM):
-            continue
-        max_tile = 2**z
-        if not (0 <= x < max_tile and 0 <= y < max_tile):
-            continue
-        tile = Tile(x=x, y=y, z=z)
-        bounds = tile_bounds(tile)
-        tile_id = f"z{z}_x{x}_y{y}"
-        tiles.append(
-            {
-                "tile_id": tile_id,
-                "z": z,
-                "x": x,
-                "y": y,
-                "path": str(file.relative_to(out)),
-                "pixel_width": TILE_SIZE,
-                "pixel_height": TILE_SIZE,
-                "lon_min": bounds.lon_min,
-                "lat_min": bounds.lat_min,
-                "lon_max": bounds.lon_max,
-                "lat_max": bounds.lat_max,
-                "center_lon": (bounds.lon_min + bounds.lon_max) / 2,
-                "center_lat": (bounds.lat_min + bounds.lat_max) / 2,
-            }
-        )
+        role = "reference" if root_name == "tiles" else "query"
+        for file in sorted(root.rglob("*.jpg")):
+            parsed = _parse_image_path(root, file)
+            if parsed is None:
+                continue
+            capture_id, z, x, y = parsed
+            max_tile = 2**z
+            if not (0 <= x < max_tile and 0 <= y < max_tile):
+                continue
+            tile = Tile(x=x, y=y, z=z)
+            bounds = tile_bounds(tile)
+            tile_id = f"{root_name}_{capture_id}_z{z}_x{x}_y{y}"
+            info = file.stat()
+            tiles.append(
+                {
+                    "tile_id": tile_id,
+                    "root": root_name,
+                    "capture_id": capture_id,
+                    "role": role,
+                    "z": z,
+                    "x": x,
+                    "y": y,
+                    "path": str(file.relative_to(out)),
+                    "bbox": [bounds.lon_min, bounds.lat_min, bounds.lon_max, bounds.lat_max],
+                    "center_lon": (bounds.lon_min + bounds.lon_max) / 2,
+                    "center_lat": (bounds.lat_min + bounds.lat_max) / 2,
+                    "image_width": TILE_SIZE,
+                    "image_height": TILE_SIZE,
+                    "pixel_width": TILE_SIZE,
+                    "pixel_height": TILE_SIZE,
+                    "bytes": info.st_size,
+                    "valid": True,
+                    "lon_min": bounds.lon_min,
+                    "lat_min": bounds.lat_min,
+                    "lon_max": bounds.lon_max,
+                    "lat_max": bounds.lat_max,
+                }
+            )
     if not tiles:
-        raise ValueError(f"no valid tiles found under {root}")
+        raise ValueError(f"no valid tiles found under {out / 'tiles'} or {out / 'drone-view'}")
     return tiles
+
+
+def _parse_image_path(root: Path, file: Path) -> tuple[str, int, int, int] | None:
+    parts = file.relative_to(root).parts
+    if len(parts) == 3:
+        capture_id = "default"
+        z_text, x_text, y_file = parts
+    elif len(parts) == 4:
+        capture_id, z_text, x_text, y_file = parts
+    else:
+        return None
+    try:
+        z = int(z_text)
+        x = int(x_text)
+        y = int(Path(y_file).stem)
+    except ValueError:
+        return None
+    if not (0 <= z <= MAX_ZOOM):
+        return None
+    return capture_id, z, x, y
+
+
+def _resolve_patch_sizes(tiles: list[dict[str, Any]], options: PrepareOptions) -> list[int]:
+    sizes = set(options.patch_sizes)
+    if options.auto400m:
+        for tile in tiles:
+            tile_width_m = meters_per_pixel(tile["center_lat"], tile["z"]) * TILE_SIZE
+            if tile_width_m > 0:
+                sizes.add(max(1, min(8, round(400 / tile_width_m))))
+    return sorted(sizes)
 
 
 def _build_patches(
     tiles: list[dict[str, Any]],
-    tile_ids: dict[tuple[int, int, int], str],
+    tile_ids: dict[tuple[str, str, int, int, int], str],
     options: PrepareOptions,
+    patch_sizes: list[int],
 ) -> list[dict[str, Any]]:
-    by_zoom: dict[int, list[dict[str, Any]]] = {}
+    by_group: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for tile in tiles:
-        by_zoom.setdefault(tile["z"], []).append(tile)
+        by_group.setdefault((tile["root"], tile["capture_id"], tile["z"]), []).append(tile)
     patches: list[dict[str, Any]] = []
-    for z, zoom_tiles in sorted(by_zoom.items()):
+    for (root, capture_id, z), zoom_tiles in sorted(by_group.items()):
         xs = sorted({tile["x"] for tile in zoom_tiles})
         ys = sorted({tile["y"] for tile in zoom_tiles})
         if not xs or not ys:
             continue
-        for size in sorted(set(options.patch_sizes)):
+        role = "reference" if root == "tiles" else "query"
+        for size in patch_sizes:
             for y in range(min(ys), max(ys) - size + 2, options.stride):
                 for x in range(min(xs), max(xs) - size + 2, options.stride):
                     keys = [
-                        (z, source_x, source_y) for source_y in range(y, y + size) for source_x in range(x, x + size)
+                        (root, capture_id, z, source_x, source_y)
+                        for source_y in range(y, y + size)
+                        for source_x in range(x, x + size)
                     ]
                     source_tiles = [tile_ids.get(key) for key in keys]
                     if any(tile_id is None for tile_id in source_tiles):
@@ -478,18 +544,28 @@ def _build_patches(
                     lat_min = bottom_right.lat_min
                     lon_max = bottom_right.lon_max
                     lat_max = top_left.lat_max
-                    patch_id = f"z{z}_x{x}-{x + size - 1}_y{y}-{y + size - 1}_s{size}"
+                    ground_w = meters_per_pixel((lat_min + lat_max) / 2, z) * TILE_SIZE * size
+                    patch_id = f"{root}_{capture_id}_z{z}_x{x}-{x + size - 1}_y{y}-{y + size - 1}_s{size}"
+                    place_id = f"z{z}_x{x}_y{y}"
                     patches.append(
                         {
                             "patch_id": patch_id,
+                            "place_id": place_id,
+                            "root": root,
+                            "capture_id": capture_id,
+                            "role": role,
                             "z": z,
+                            "x": x,
+                            "y": y,
                             "source_x_min": x,
                             "source_x_max": x + size - 1,
                             "source_y_min": y,
                             "source_y_max": y + size - 1,
                             "source_tiles": source_tiles,
+                            "source_tile_ids": source_tiles,
                             "pixel_width": TILE_SIZE * size,
                             "pixel_height": TILE_SIZE * size,
+                            "bbox": [lon_min, lat_min, lon_max, lat_max],
                             "lon_min": lon_min,
                             "lat_min": lat_min,
                             "lon_max": lon_max,
@@ -499,6 +575,17 @@ def _build_patches(
                             "mosaic_size_tiles": size,
                             "stride_tiles": options.stride,
                             "scale_profile": f"z{z}_{size}x{size}",
+                            "ground_width_m_estimate": ground_w,
+                            "ground_height_m_estimate": ground_w,
+                            "complete": True,
+                            "rotation_safe_circle_diameter_px": TILE_SIZE * size,
+                            "circular_crop_available": True,
+                            "image_written": False,
+                            "virtual_compose_spec": {
+                                "type": "virtual_mosaic",
+                                "tile_ids": source_tiles,
+                                "layout": [size, size],
+                            },
                             "image_path_or_virtual_spec": {
                                 "type": "virtual_mosaic",
                                 "tile_ids": source_tiles,
@@ -507,6 +594,72 @@ def _build_patches(
                         }
                     )
     return patches
+
+
+def _build_places(tiles: list[dict[str, Any]], patches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for tile in tiles:
+        key = (tile["z"], tile["x"], tile["y"])
+        place = grouped.setdefault(
+            key,
+            {
+                "place_id": f"z{tile['z']}_x{tile['x']}_y{tile['y']}",
+                "z": tile["z"],
+                "x": tile["x"],
+                "y": tile["y"],
+                "center_lon": tile["center_lon"],
+                "center_lat": tile["center_lat"],
+                "bbox": tile["bbox"],
+                "available_roots": [],
+                "available_captures": [],
+                "tile_ids": [],
+                "patch_ids": [],
+                "quality_summary": {"recommendation": "keep"},
+            },
+        )
+        place["available_roots"].append(tile["root"])
+        place["available_captures"].append(tile["capture_id"])
+        place["tile_ids"].append(tile["tile_id"])
+    for patch in patches:
+        key = (patch["z"], patch["x"], patch["y"])
+        if key in grouped:
+            grouped[key]["patch_ids"].append(patch["patch_id"])
+    for place in grouped.values():
+        place["available_roots"] = sorted(set(place["available_roots"]))
+        place["available_captures"] = sorted(set(place["available_captures"]))
+    return list(grouped.values())
+
+
+def _build_quality(tiles: list[dict[str, Any]], patches: list[dict[str, Any]]) -> dict[str, Any]:
+    tile_quality = []
+    for tile in tiles:
+        reasons = ["very_small_file"] if tile["bytes"] < 128 else []
+        tile_quality.append(
+            {
+                "id": tile["tile_id"],
+                "type": "tile",
+                "blank_near_blank_score": 1.0 if reasons else 0.0,
+                "mean_brightness": None,
+                "contrast": None,
+                "blur_estimate": None,
+                "edge_density": None,
+                "entropy": None,
+                "likely_low_information": bool(reasons),
+                "recommendation": "reject" if reasons else "keep",
+                "reject_reasons": reasons,
+            }
+        )
+    patch_quality = [
+        {
+            "id": patch["patch_id"],
+            "type": "patch",
+            "likely_low_information": False,
+            "recommendation": "keep",
+            "reject_reasons": [],
+        }
+        for patch in patches
+    ]
+    return {"tiles": tile_quality, "patches": patch_quality}
 
 
 def _tile_url(subdomain: str, tile: Tile) -> str:

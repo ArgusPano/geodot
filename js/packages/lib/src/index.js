@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const TILE_SIZE = 256;
@@ -129,24 +129,35 @@ export function tilePath(out, tile) {
 }
 
 export async function prepareDataset(options = {}) {
+  const patchSizesProvided = Object.hasOwn(options, "patchSizes");
   const config = {
     out: "data",
-    patchSizes: [1, 2, 3, 4],
+    patchSizes: [1, 2, 4],
     stride: 1,
-    rotations: [0, 90, 180, 270],
+    rotations: [0, 45, 90, 135, 180, 225, 270, 315],
+    auto400m: !patchSizesProvided,
     ...options,
   };
   validatePrepareOptions(config);
   const tiles = await discoverTiles(config.out);
+  const patchSizes = resolvePatchSizes(tiles, config);
   const tileIds = new Map(
-    tiles.map((tile) => [`${tile.z}/${tile.x}/${tile.y}`, tile.tile_id]),
+    tiles.map((tile) => [
+      `${tile.root}/${tile.capture_id}/${tile.z}/${tile.x}/${tile.y}`,
+      tile.tile_id,
+    ]),
   );
-  const patches = buildPatches(tiles, tileIds, config);
+  const patches = buildPatches(tiles, tileIds, config, patchSizes);
+  const places = buildPlaces(tiles, patches);
+  const quality = buildQuality(tiles, patches);
   const variants = patches.flatMap((patch) =>
     config.rotations.map((rotation) => ({
       variant_id: `${patch.patch_id}_r${rotation}`,
       patch_id: patch.patch_id,
-      rotation_deg: rotation,
+      rotation_degrees: rotation,
+      crop_shape: "square",
+      virtual_only: true,
+      image_written: false,
       descriptor_id: null,
       index_id: null,
     })),
@@ -169,21 +180,48 @@ export async function prepareDataset(options = {}) {
     JSON.stringify(variants, null, 2),
   );
   await writeFile(
+    path.join(manifest, "places.json"),
+    JSON.stringify(places, null, 2),
+  );
+  await writeFile(
+    path.join(manifest, "quality.json"),
+    JSON.stringify(quality, null, 2),
+  );
+  await writeFile(
     path.join(configDir, "dataset.json"),
     JSON.stringify(
       {
+        schema_version: "1.0",
+        geodot_version: "unknown",
+        created_at: new Date().toISOString(),
+        command: process.argv.join(" "),
+        output_directory: config.out,
         profile: "aerial-vpr-default",
-        tile_root: "tiles/{z}/{x}/{y}.jpg",
+        tile_roots: [...new Set(tiles.map((tile) => tile.root))]
+          .sort()
+          .map((root) => `${root}/{z}/{x}/{y}.jpg`),
         mode: "virtual",
         tile_size: TILE_SIZE,
-        patch_sizes: config.patchSizes,
+        image_roots_detected: [
+          ...new Set(tiles.map((tile) => tile.root)),
+        ].sort(),
+        zoom_levels_detected: [...new Set(tiles.map((tile) => tile.z))].sort(
+          (a, b) => a - b,
+        ),
+        patch_sizes: patchSizes,
         stride: config.stride,
         rotations: config.rotations,
+        auto400m: config.auto400m,
+        circular_crops_virtual: true,
+        images_modified: false,
+        descriptors_computed: false,
+        indexes_built: false,
         appearance: [],
         counts: {
           tiles: tiles.length,
           patches: patches.length,
           variants: variants.length,
+          places: places.length,
         },
       },
       null,
@@ -472,43 +510,75 @@ function validatePrepareOptions(options) {
 }
 
 async function discoverTiles(out) {
-  const root = path.join(out, "tiles");
-  const files = await listFiles(root).catch((error) => {
-    if (error.code === "ENOENT")
-      throw new Error(`tile directory not found: ${root}`);
-    throw error;
-  });
   const tiles = [];
-  for (const file of files.sort()) {
-    if (!file.endsWith(".jpg")) continue;
-    const relative = path.relative(root, file);
-    const [zText, xText, yFile] = relative.split(path.sep);
-    if (!zText || !xText || !yFile) continue;
-    const z = Number(zText);
-    const x = Number(xText);
-    const y = Number(path.basename(yFile, ".jpg"));
-    if (![z, x, y].every(Number.isInteger) || z < 0 || z > MAX_ZOOM) continue;
-    const maxTile = 2 ** z;
-    if (x < 0 || x >= maxTile || y < 0 || y >= maxTile) continue;
-    const bounds = tileBounds({ x, y, z });
-    tiles.push({
-      tile_id: `z${z}_x${x}_y${y}`,
-      z,
-      x,
-      y,
-      path: path.relative(out, file),
-      pixel_width: TILE_SIZE,
-      pixel_height: TILE_SIZE,
-      lon_min: bounds.lonMin,
-      lat_min: bounds.latMin,
-      lon_max: bounds.lonMax,
-      lat_max: bounds.latMax,
-      center_lon: (bounds.lonMin + bounds.lonMax) / 2,
-      center_lat: (bounds.latMin + bounds.latMax) / 2,
+  for (const rootName of ["tiles", "drone-view"]) {
+    const root = path.join(out, rootName);
+    const files = await listFiles(root).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
     });
+    for (const file of files.sort()) {
+      if (!file.endsWith(".jpg")) continue;
+      const parsed = parseImagePath(root, file);
+      if (!parsed) continue;
+      const { captureId, z, x, y } = parsed;
+      const maxTile = 2 ** z;
+      if (x < 0 || x >= maxTile || y < 0 || y >= maxTile) continue;
+      const bounds = tileBounds({ x, y, z });
+      const info = await stat(file);
+      tiles.push({
+        tile_id: `${rootName}_${captureId}_z${z}_x${x}_y${y}`,
+        root: rootName,
+        capture_id: captureId,
+        role: rootName === "tiles" ? "reference" : "query",
+        z,
+        x,
+        y,
+        path: path.relative(out, file),
+        bbox: [bounds.lonMin, bounds.latMin, bounds.lonMax, bounds.latMax],
+        center_lon: (bounds.lonMin + bounds.lonMax) / 2,
+        center_lat: (bounds.latMin + bounds.latMax) / 2,
+        image_width: TILE_SIZE,
+        image_height: TILE_SIZE,
+        pixel_width: TILE_SIZE,
+        pixel_height: TILE_SIZE,
+        bytes: info.size,
+        valid: true,
+        lon_min: bounds.lonMin,
+        lat_min: bounds.latMin,
+        lon_max: bounds.lonMax,
+        lat_max: bounds.latMax,
+      });
+    }
   }
-  if (tiles.length === 0) throw new Error(`no valid tiles found under ${root}`);
+  if (tiles.length === 0)
+    throw new Error(`no valid tiles found under ${path.join(out, "tiles")}`);
   return tiles;
+}
+
+function parseImagePath(root, file) {
+  const parts = path.relative(root, file).split(path.sep);
+  const values = parts.length === 3 ? ["default", ...parts] : parts;
+  if (values.length !== 4) return undefined;
+  const [captureId, zText, xText, yFile] = values;
+  const z = Number(zText);
+  const x = Number(xText);
+  const y = Number(path.basename(yFile, ".jpg"));
+  if (![z, x, y].every(Number.isInteger) || z < 0 || z > MAX_ZOOM)
+    return undefined;
+  return { captureId, z, x, y };
+}
+
+function resolvePatchSizes(tiles, options) {
+  const sizes = new Set(options.patchSizes);
+  if (options.auto400m) {
+    for (const tile of tiles) {
+      const tileWidthM = metersPerPixel(tile.center_lat, tile.z) * TILE_SIZE;
+      if (tileWidthM > 0)
+        sizes.add(Math.max(1, Math.min(8, Math.round(400 / tileWidthM))));
+    }
+  }
+  return [...sizes].sort((a, b) => a - b);
 }
 
 async function listFiles(root) {
@@ -525,19 +595,22 @@ async function listFiles(root) {
   return files;
 }
 
-function buildPatches(tiles, tileIds, options) {
-  const byZoom = new Map();
+function buildPatches(tiles, tileIds, options, patchSizes) {
+  const byGroup = new Map();
   for (const tile of tiles) {
-    if (!byZoom.has(tile.z)) byZoom.set(tile.z, []);
-    byZoom.get(tile.z).push(tile);
+    const key = `${tile.root}/${tile.capture_id}/${tile.z}`;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(tile);
   }
   const patches = [];
-  for (const [z, zoomTiles] of [...byZoom.entries()].sort(
-    ([a], [b]) => a - b,
+  for (const [key, zoomTiles] of [...byGroup.entries()].sort(([a], [b]) =>
+    a.localeCompare(b),
   )) {
+    const [root, captureId, zText] = key.split("/");
+    const z = Number(zText);
     const xs = zoomTiles.map((tile) => tile.x);
     const ys = zoomTiles.map((tile) => tile.y);
-    for (const size of [...new Set(options.patchSizes)].sort((a, b) => a - b)) {
+    for (const size of patchSizes) {
       for (
         let y = Math.min(...ys);
         y <= Math.max(...ys) - size + 1;
@@ -551,7 +624,9 @@ function buildPatches(tiles, tileIds, options) {
           const sourceTiles = [];
           for (let sourceY = y; sourceY < y + size; sourceY += 1) {
             for (let sourceX = x; sourceX < x + size; sourceX += 1) {
-              sourceTiles.push(tileIds.get(`${z}/${sourceX}/${sourceY}`));
+              sourceTiles.push(
+                tileIds.get(`${root}/${captureId}/${z}/${sourceX}/${sourceY}`),
+              );
             }
           }
           if (sourceTiles.some((tileId) => tileId === undefined)) continue;
@@ -565,17 +640,27 @@ function buildPatches(tiles, tileIds, options) {
           const latMin = bottomRight.latMin;
           const lonMax = bottomRight.lonMax;
           const latMax = topLeft.latMax;
-          const patchId = `z${z}_x${x}-${x + size - 1}_y${y}-${y + size - 1}_s${size}`;
+          const patchId = `${root}_${captureId}_z${z}_x${x}-${x + size - 1}_y${y}-${y + size - 1}_s${size}`;
+          const groundWidth =
+            metersPerPixel((latMin + latMax) / 2, z) * TILE_SIZE * size;
           patches.push({
             patch_id: patchId,
+            place_id: `z${z}_x${x}_y${y}`,
+            root,
+            capture_id: captureId,
+            role: root === "tiles" ? "reference" : "query",
             z,
+            x,
+            y,
             source_x_min: x,
             source_x_max: x + size - 1,
             source_y_min: y,
             source_y_max: y + size - 1,
             source_tiles: sourceTiles,
+            source_tile_ids: sourceTiles,
             pixel_width: TILE_SIZE * size,
             pixel_height: TILE_SIZE * size,
+            bbox: [lonMin, latMin, lonMax, latMax],
             lon_min: lonMin,
             lat_min: latMin,
             lon_max: lonMax,
@@ -585,6 +670,17 @@ function buildPatches(tiles, tileIds, options) {
             mosaic_size_tiles: size,
             stride_tiles: options.stride,
             scale_profile: `z${z}_${size}x${size}`,
+            ground_width_m_estimate: groundWidth,
+            ground_height_m_estimate: groundWidth,
+            complete: true,
+            rotation_safe_circle_diameter_px: TILE_SIZE * size,
+            circular_crop_available: true,
+            image_written: false,
+            virtual_compose_spec: {
+              type: "virtual_mosaic",
+              tile_ids: sourceTiles,
+              layout: [size, size],
+            },
             image_path_or_virtual_spec: {
               type: "virtual_mosaic",
               tile_ids: sourceTiles,
@@ -596,6 +692,71 @@ function buildPatches(tiles, tileIds, options) {
     }
   }
   return patches;
+}
+
+function buildPlaces(tiles, patches) {
+  const places = new Map();
+  for (const tile of tiles) {
+    const key = `${tile.z}/${tile.x}/${tile.y}`;
+    if (!places.has(key)) {
+      places.set(key, {
+        place_id: `z${tile.z}_x${tile.x}_y${tile.y}`,
+        z: tile.z,
+        x: tile.x,
+        y: tile.y,
+        center_lon: tile.center_lon,
+        center_lat: tile.center_lat,
+        bbox: tile.bbox,
+        available_roots: [],
+        available_captures: [],
+        tile_ids: [],
+        patch_ids: [],
+        quality_summary: { recommendation: "keep" },
+      });
+    }
+    const place = places.get(key);
+    place.available_roots.push(tile.root);
+    place.available_captures.push(tile.capture_id);
+    place.tile_ids.push(tile.tile_id);
+  }
+  for (const patch of patches) {
+    places
+      .get(`${patch.z}/${patch.x}/${patch.y}`)
+      ?.patch_ids.push(patch.patch_id);
+  }
+  return [...places.values()].map((place) => ({
+    ...place,
+    available_roots: [...new Set(place.available_roots)].sort(),
+    available_captures: [...new Set(place.available_captures)].sort(),
+  }));
+}
+
+function buildQuality(tiles, patches) {
+  return {
+    tiles: tiles.map((tile) => {
+      const reasons = tile.bytes < 128 ? ["very_small_file"] : [];
+      return {
+        id: tile.tile_id,
+        type: "tile",
+        blank_near_blank_score: reasons.length ? 1 : 0,
+        mean_brightness: null,
+        contrast: null,
+        blur_estimate: null,
+        edge_density: null,
+        entropy: null,
+        likely_low_information: reasons.length > 0,
+        recommendation: reasons.length ? "reject" : "keep",
+        reject_reasons: reasons,
+      };
+    }),
+    patches: patches.map((patch) => ({
+      id: patch.patch_id,
+      type: "patch",
+      likely_low_information: false,
+      recommendation: "keep",
+      reject_reasons: [],
+    })),
+  };
 }
 
 function* tileGridIterator(lat, lon, zoom, cols, rows, onProgress) {

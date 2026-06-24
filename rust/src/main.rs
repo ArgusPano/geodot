@@ -74,16 +74,16 @@ struct Args {
     prepare: bool,
 
     /// Mosaic sizes in tiles for --prepare
-    #[arg(long, default_value = "1,2,3,4")]
-    patch_sizes: String,
+    #[arg(long)]
+    patch_sizes: Option<String>,
 
     /// Tile stride for --prepare mosaics
     #[arg(long, default_value = "1", value_parser = parse_positive_u32)]
     stride: u32,
 
     /// Rotation variants for --prepare
-    #[arg(long, default_value = "0,90,180,270")]
-    rotations: String,
+    #[arg(long)]
+    rotations: Option<String>,
 
     /// Do not write manifest.json
     #[arg(long)]
@@ -129,23 +129,31 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     if args.prepare {
-        let report = prepare_dataset(PrepareOptions {
-            out: args.out,
-            patch_sizes: parse_u32_list(&args.patch_sizes).map_err(|error| anyhow!(error))?,
-            stride: args.stride,
-            rotations: parse_u32_list(&args.rotations).map_err(|error| anyhow!(error))?,
-        })?;
-        println!();
-        println!("  geodot - dataset preparation");
-        println!("  -------------------------------------");
-        println!("  Tiles:    {}", report.tiles);
-        println!("  Patches:  {}", report.patches);
-        println!("  Variants: {}", report.variants);
-        println!("  Output:   {}", report.path.display());
-        return Ok(());
+        let should_download = args.geojson.is_some()
+            || args.polygon.is_some()
+            || args.bottom_right_lat.is_some()
+            || args.bottom_right_lon.is_some();
+        if !should_download {
+            let defaults = PrepareOptions::default();
+            let report = prepare_dataset(PrepareOptions {
+                out: args.out,
+                patch_sizes: match &args.patch_sizes {
+                    Some(value) => parse_u32_list(value).map_err(|error| anyhow!(error))?,
+                    None => defaults.patch_sizes,
+                },
+                stride: args.stride,
+                rotations: match &args.rotations {
+                    Some(value) => parse_u32_list(value).map_err(|error| anyhow!(error))?,
+                    None => defaults.rotations,
+                },
+                auto400m: args.patch_sizes.is_none(),
+            })?;
+            print_prepare_report(&report);
+            return Ok(());
+        }
     }
     let start = Instant::now();
-    let polygon = match (args.polygon, args.geojson.as_deref()) {
+    let polygon = match (args.polygon.clone(), args.geojson.as_deref()) {
         (Some(polygon), _) => polygon,
         (None, Some(source)) => load_geojson_polygon(source).await?,
         (None, None) => Vec::new(),
@@ -160,7 +168,7 @@ async fn main() -> Result<()> {
         zoom: args.zoom,
         cols: args.cols,
         rows: args.rows,
-        out: args.out,
+        out: args.out.clone(),
         jobs: args.jobs,
         tile_url_template: None,
         no_manifest: args.no_manifest,
@@ -218,7 +226,34 @@ async fn main() -> Result<()> {
         start.elapsed().as_secs_f64(),
         report.failed.len()
     );
+    if args.prepare {
+        let defaults = PrepareOptions::default();
+        let report = prepare_dataset(PrepareOptions {
+            out: args.out,
+            patch_sizes: match &args.patch_sizes {
+                Some(value) => parse_u32_list(value).map_err(|error| anyhow!(error))?,
+                None => defaults.patch_sizes,
+            },
+            stride: args.stride,
+            rotations: match &args.rotations {
+                Some(value) => parse_u32_list(value).map_err(|error| anyhow!(error))?,
+                None => defaults.rotations,
+            },
+            auto400m: args.patch_sizes.is_none(),
+        })?;
+        print_prepare_report(&report);
+    }
     Ok(())
+}
+
+fn print_prepare_report(report: &geodot::PrepareReport) {
+    println!();
+    println!("  geodot - dataset preparation");
+    println!("  -------------------------------------");
+    println!("  Tiles:    {}", report.tiles);
+    println!("  Patches:  {}", report.patches);
+    println!("  Variants: {}", report.variants);
+    println!("  Output:   {}", report.path.display());
 }
 
 fn selection_progress_printer() -> impl FnMut(SelectionProgress) {

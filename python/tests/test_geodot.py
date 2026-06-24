@@ -158,3 +158,69 @@ def test_prepare_dataset_writes_virtual_vpr_manifests(tmp_path: Path) -> None:
     assert mosaic["image_path_or_virtual_spec"]["type"] == "virtual_mosaic"
     dataset = json.loads((tmp_path / "vpr" / "config" / "dataset.json").read_text(encoding="utf-8"))
     assert dataset["mode"] == "virtual"
+
+
+def test_prepare_dataset_detects_drone_view_captures_and_metadata_only(tmp_path: Path) -> None:
+    original_bytes = b"x" * 128
+    paths = [
+        tmp_path / "tiles" / "18" / "158488" / "81979.jpg",
+        tmp_path / "drone-view" / "18" / "158488" / "81979.jpg",
+        tmp_path / "tiles" / "2021_summer" / "18" / "158489" / "81979.jpg",
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(original_bytes)
+
+    report = prepare_dataset(PrepareOptions(out=tmp_path))
+
+    assert report.tiles == 3
+    assert all(path.read_bytes() == original_bytes for path in paths)
+    assert not (tmp_path / "vpr" / "descriptors").exists()
+    assert not (tmp_path / "vpr" / "index").exists()
+    assert not list((tmp_path / "vpr").rglob("*.jpg"))
+
+    tiles = json.loads((tmp_path / "vpr" / "manifest" / "tiles.json").read_text(encoding="utf-8"))
+    assert {tile["root"] for tile in tiles} == {"tiles", "drone-view"}
+    assert {tile["role"] for tile in tiles} == {"reference", "query"}
+    assert {tile["capture_id"] for tile in tiles} == {"default", "2021_summer"}
+
+    patches = json.loads((tmp_path / "vpr" / "manifest" / "patches.json").read_text(encoding="utf-8"))
+    assert all(patch["virtual_compose_spec"]["type"] == "virtual_mosaic" for patch in patches)
+    assert all(patch["image_written"] is False for patch in patches)
+    assert {patch["mosaic_size_tiles"] for patch in patches} >= {1}
+
+    variants = json.loads((tmp_path / "vpr" / "manifest" / "variants.json").read_text(encoding="utf-8"))
+    assert any(variant["rotation_degrees"] == 45 for variant in variants)
+    assert all(variant["virtual_only"] is True for variant in variants)
+    assert all(variant["descriptor_id"] is None and variant["index_id"] is None for variant in variants)
+
+    places = json.loads((tmp_path / "vpr" / "manifest" / "places.json").read_text(encoding="utf-8"))
+    matched = next(place for place in places if place["x"] == 158488 and place["y"] == 81979)
+    assert matched["place_id"] == "z18_x158488_y81979"
+    assert matched["available_roots"] == ["drone-view", "tiles"]
+
+    quality = json.loads((tmp_path / "vpr" / "manifest" / "quality.json").read_text(encoding="utf-8"))
+    assert len(quality["tiles"]) == 3
+    assert all(item["recommendation"] == "keep" for item in quality["tiles"])
+
+    dataset = json.loads((tmp_path / "vpr" / "config" / "dataset.json").read_text(encoding="utf-8"))
+    assert dataset["images_modified"] is False
+    assert dataset["descriptors_computed"] is False
+    assert dataset["indexes_built"] is False
+    assert dataset["auto400m"] is True
+
+
+def test_prepare_dataset_user_overrides_disable_auto400m(tmp_path: Path) -> None:
+    for x in (158488, 158489, 158490):
+        path = tmp_path / "tiles" / "18" / str(x) / "81979.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 128)
+
+    prepare_dataset(PrepareOptions(out=tmp_path, patch_sizes=(1, 2, 3), rotations=(0, 90), auto400m=False))
+
+    dataset = json.loads((tmp_path / "vpr" / "config" / "dataset.json").read_text(encoding="utf-8"))
+    variants = json.loads((tmp_path / "vpr" / "manifest" / "variants.json").read_text(encoding="utf-8"))
+    assert dataset["patch_sizes"] == [1, 2, 3]
+    assert dataset["rotations"] == [0, 90]
+    assert dataset["auto400m"] is False
+    assert {variant["rotation_degrees"] for variant in variants} == {0, 90}

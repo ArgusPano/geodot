@@ -34,9 +34,9 @@ const defaults = {
   noManifest: false,
   noDemo: false,
   prepare: false,
-  patchSizes: [1, 2, 3, 4],
+  patchSizes: undefined,
   stride: 1,
-  rotations: [0, 90, 180, 270],
+  rotations: undefined,
 };
 
 const flags = {
@@ -266,14 +266,23 @@ function openBrowser(url) {
 async function runDownload() {
   const options = parseArgs(process.argv.slice(2));
   if (options.prepare) {
-    const report = await prepareDataset(options);
-    console.log("\n  geodot - dataset preparation");
-    console.log("  -------------------------------------");
-    console.log(`  Tiles:    ${report.tiles}`);
-    console.log(`  Patches:  ${report.patches}`);
-    console.log(`  Variants: ${report.variants}`);
-    console.log(`  Output:   ${report.path}`);
-    return;
+    const shouldDownload = Boolean(
+      options.geojson ||
+      options.polygon ||
+      options.bottomRightLat !== undefined ||
+      options.bottomRightLon !== undefined,
+    );
+    if (!shouldDownload) {
+      const prepareOptions = {
+        out: options.out,
+        stride: options.stride,
+        ...(options.patchSizes ? { patchSizes: options.patchSizes } : {}),
+        ...(options.rotations ? { rotations: options.rotations } : {}),
+      };
+      const report = await prepareDataset(prepareOptions);
+      printPrepareReport(report);
+      return;
+    }
   }
   if (options.geojson && !options.polygon) {
     options.polygon = await loadGeoJSONPolygon(options.geojson);
@@ -317,6 +326,24 @@ async function runDownload() {
   console.log(
     `  ${report.tiles.length} tiles  |  ${((performance.now() - start) / 1000).toFixed(1)}s  |  failed: ${report.failed.length}`,
   );
+  if (options.prepare) {
+    const prepareOptions = {
+      out: options.out,
+      stride: options.stride,
+      ...(options.patchSizes ? { patchSizes: options.patchSizes } : {}),
+      ...(options.rotations ? { rotations: options.rotations } : {}),
+    };
+    printPrepareReport(await prepareDataset(prepareOptions));
+  }
+}
+
+function printPrepareReport(report) {
+  console.log("\n  geodot - dataset preparation");
+  console.log("  -------------------------------------");
+  console.log(`  Tiles:    ${report.tiles}`);
+  console.log(`  Patches:  ${report.patches}`);
+  console.log(`  Variants: ${report.variants}`);
+  console.log(`  Output:   ${report.path}`);
 }
 
 function progressPrinter(phase, total) {
