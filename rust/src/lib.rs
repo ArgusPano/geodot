@@ -135,6 +135,14 @@ pub struct RenderReport {
     pub bytes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValidationReport {
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub counts: HashMap<String, usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionProgress {
     pub scanned: usize,
@@ -1076,6 +1084,207 @@ pub fn render_dataset(
         output_path,
         bytes: data.len(),
     })
+}
+
+pub fn load_dataset(out: impl AsRef<Path>) -> Result<HashMap<String, serde_json::Value>> {
+    let out = out.as_ref();
+    let manifest = out.join("vpr").join("manifest");
+    let config = out.join("vpr").join("config");
+    let files = [
+        ("tiles", manifest.join("tiles.json")),
+        ("patches", manifest.join("patches.json")),
+        ("variants", manifest.join("variants.json")),
+        ("places", manifest.join("places.json")),
+        ("quality", manifest.join("quality.json")),
+        ("dataset", config.join("dataset.json")),
+    ];
+    let mut dataset = HashMap::new();
+    for (name, path) in files {
+        if !path.exists() {
+            bail!("missing dataset manifest: {}", path.display());
+        }
+        dataset.insert(name.to_string(), serde_json::from_slice(&fs::read(path)?)?);
+    }
+    Ok(dataset)
+}
+
+pub fn validate_dataset(out: impl AsRef<Path>, strict: bool) -> Result<ValidationReport> {
+    let out = out.as_ref();
+    let dataset = load_dataset(out)?;
+    let tiles = dataset["tiles"].as_array().cloned().unwrap_or_default();
+    let patches = dataset["patches"].as_array().cloned().unwrap_or_default();
+    let variants = dataset["variants"].as_array().cloned().unwrap_or_default();
+    let places = dataset["places"].as_array().cloned().unwrap_or_default();
+    let config = &dataset["dataset"];
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let tile_ids = check_unique_ids("tile", &tiles, "tile_id", &mut errors);
+    let patch_ids = check_unique_ids("patch", &patches, "patch_id", &mut errors);
+    check_unique_ids("variant", &variants, "variant_id", &mut errors);
+    check_unique_ids("place", &places, "place_id", &mut errors);
+    for tile in &tiles {
+        let tile_id = tile["tile_id"].as_str().unwrap_or_default();
+        let path = tile["path"].as_str().unwrap_or_default();
+        if path.is_empty() || !out.join(path).exists() {
+            errors.push(format!("missing source image for tile {tile_id}: {path}"));
+        }
+        if !valid_bbox(&tile["bbox"]) {
+            errors.push(format!("invalid bbox for tile {tile_id}"));
+        }
+        if !positive_int(&tile["image_width"]) || !positive_int(&tile["image_height"]) {
+            errors.push(format!("invalid image dimensions for tile {tile_id}"));
+        }
+    }
+    for patch in &patches {
+        let patch_id = patch["patch_id"].as_str().unwrap_or_default();
+        if !valid_bbox(&patch["bbox"]) {
+            errors.push(format!("invalid bbox for patch {patch_id}"));
+        }
+        for tile_id in patch["source_tile_ids"]
+            .as_array()
+            .or_else(|| patch["source_tiles"].as_array())
+            .into_iter()
+            .flatten()
+        {
+            let tile_id = tile_id.as_str().unwrap_or_default();
+            if !tile_ids.contains(tile_id) {
+                errors.push(format!(
+                    "patch {patch_id} references missing tile {tile_id}"
+                ));
+            }
+        }
+    }
+    for variant in &variants {
+        let variant_id = variant["variant_id"].as_str().unwrap_or_default();
+        let patch_id = variant["patch_id"].as_str().unwrap_or_default();
+        if !patch_ids.contains(patch_id) {
+            errors.push(format!(
+                "variant {variant_id} references missing patch {patch_id}"
+            ));
+        }
+    }
+    for place in &places {
+        let place_id = place["place_id"].as_str().unwrap_or_default();
+        for field in ["tile_ids", "reference_tile_ids", "query_tile_ids"] {
+            for tile_id in place[field].as_array().into_iter().flatten() {
+                let tile_id = tile_id.as_str().unwrap_or_default();
+                if !tile_ids.contains(tile_id) {
+                    errors.push(format!(
+                        "place {place_id} {field} references missing tile {tile_id}"
+                    ));
+                }
+            }
+        }
+        for patch_id in place["patch_ids"].as_array().into_iter().flatten() {
+            let patch_id = patch_id.as_str().unwrap_or_default();
+            if !patch_ids.contains(patch_id) {
+                errors.push(format!(
+                    "place {place_id} references missing patch {patch_id}"
+                ));
+            }
+        }
+    }
+    for field in [
+        "images_modified",
+        "descriptors_computed",
+        "indexes_built",
+        "generated_images_default",
+    ] {
+        if config[field].as_bool() != Some(false) {
+            errors.push(format!("dataset config {field} must be false"));
+        }
+    }
+    let mut generated = Vec::new();
+    collect_files(&out.join("vpr"), &mut generated)?;
+    let generated_count = generated
+        .iter()
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .map(|value| {
+                    SUPPORTED_IMAGE_EXTENSIONS
+                        .contains(&format!(".{value}").to_ascii_lowercase().as_str())
+                })
+                .unwrap_or(false)
+        })
+        .count();
+    if generated_count > 0 {
+        warnings.push(format!(
+            "found generated image(s) under vpr: {generated_count}"
+        ));
+    }
+    if strict && !warnings.is_empty() {
+        errors.append(&mut warnings);
+    }
+    let mut counts = HashMap::new();
+    counts.insert("tiles".into(), tiles.len());
+    counts.insert("patches".into(), patches.len());
+    counts.insert("variants".into(), variants.len());
+    counts.insert("places".into(), places.len());
+    counts.insert(
+        "query_tiles".into(),
+        tiles
+            .iter()
+            .filter(|tile| tile["role"].as_str() == Some("query"))
+            .count(),
+    );
+    counts.insert(
+        "reference_tiles".into(),
+        tiles
+            .iter()
+            .filter(|tile| tile["role"].as_str() == Some("reference"))
+            .count(),
+    );
+    counts.insert("warnings".into(), warnings.len());
+    counts.insert("errors".into(), errors.len());
+    Ok(ValidationReport {
+        valid: errors.is_empty(),
+        errors,
+        warnings,
+        counts,
+    })
+}
+
+fn check_unique_ids(
+    kind: &str,
+    items: &[serde_json::Value],
+    field: &str,
+    errors: &mut Vec<String>,
+) -> std::collections::HashSet<String> {
+    let mut seen = std::collections::HashSet::new();
+    for item in items {
+        let Some(value) = item[field].as_str() else {
+            errors.push(format!("{kind} missing {field}"));
+            continue;
+        };
+        if !seen.insert(value.to_string()) {
+            errors.push(format!("duplicate {kind} id: {value}"));
+        }
+    }
+    seen
+}
+
+fn valid_bbox(value: &serde_json::Value) -> bool {
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    if items.len() != 4 {
+        return false;
+    }
+    let values: Option<Vec<_>> = items.iter().map(|item| item.as_f64()).collect();
+    let Some(values) = values else {
+        return false;
+    };
+    values[0] >= -180.0
+        && values[0] < values[2]
+        && values[2] <= 180.0
+        && values[1] >= -90.0
+        && values[1] < values[3]
+        && values[3] <= 90.0
+}
+
+fn positive_int(value: &serde_json::Value) -> bool {
+    value.as_u64().map(|value| value > 0).unwrap_or(false)
 }
 
 pub async fn download(options: DownloadOptions) -> Result<DownloadReport> {

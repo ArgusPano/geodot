@@ -14,7 +14,13 @@ import {
   tileGridForPolygon,
   tilePath,
   prepareDataset,
+  validateDataset,
 } from "@geodot/lib";
+
+const tinyPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 const geojson = {
   type: "FeatureCollection",
@@ -206,6 +212,35 @@ test("prepareDataset writes virtual VPR manifests", async () => {
     assert.equal(mosaic.source_y_min, 3);
     assert.equal(mosaic.source_y_max, 4);
     assert.equal(mosaic.image_path_or_virtual_spec.type, "virtual_mosaic");
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("validateDataset checks prepared manifests", async () => {
+  const out = await mkdtemp(path.join(tmpdir(), "geodot-validate-"));
+  try {
+    const file = path.join(out, "drone-view", "18", "140140", "97408.png");
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, tinyPng);
+    await prepareDataset({
+      out,
+      patchSizes: [1],
+      rotations: [0],
+      auto400m: false,
+    });
+    const valid = await validateDataset(out);
+    assert.equal(valid.valid, true);
+    assert.equal(valid.counts.tiles, 1);
+    assert.equal(valid.counts.query_tiles, 1);
+
+    const patchesFile = path.join(out, "vpr", "manifest", "patches.json");
+    const patches = JSON.parse(await readFile(patchesFile, "utf8"));
+    patches[0].source_tile_ids = ["missing_tile"];
+    await writeFile(patchesFile, JSON.stringify(patches));
+    const invalid = await validateDataset(out);
+    assert.equal(invalid.valid, false);
+    assert.match(invalid.errors[0], /missing tile/);
   } finally {
     await rm(out, { recursive: true, force: true });
   }

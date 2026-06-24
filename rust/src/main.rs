@@ -3,7 +3,7 @@ use clap::Parser;
 use geodot::{
     Coordinate, DownloadOptions, DownloadProgress, MAX_ZOOM, PrepareOptions, SelectionProgress,
     count_tiles_for_options_with_progress, download_with_progress, load_geojson_polygon,
-    meters_per_pixel, prepare_dataset, render_dataset, validate_options,
+    meters_per_pixel, prepare_dataset, render_dataset, validate_dataset, validate_options,
 };
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -140,6 +140,18 @@ struct RenderArgs {
     output: PathBuf,
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "geodot validate", about = "Validate a prepared VPR dataset.")]
+struct ValidateArgs {
+    /// Prepared dataset directory
+    #[arg(short, long, default_value = "data")]
+    out: PathBuf,
+
+    /// Treat warnings as errors
+    #[arg(long)]
+    strict: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut raw_args = std::env::args();
@@ -153,6 +165,11 @@ async fn main() -> Result<()> {
         Some("render") => {
             let args = std::iter::once(format!("{program} render")).chain(raw_args);
             render_preview(RenderArgs::parse_from(args))?;
+            return Ok(());
+        }
+        Some("validate") => {
+            let args = std::iter::once(format!("{program} validate")).chain(raw_args);
+            validate_prepared_dataset(ValidateArgs::parse_from(args))?;
             return Ok(());
         }
         _ => {}
@@ -293,6 +310,44 @@ fn render_preview(args: RenderArgs) -> Result<()> {
     println!("  Source: {}", report.source_path.display());
     println!("  Output: {}", report.output_path.display());
     println!("  Bytes:  {}", report.bytes);
+    Ok(())
+}
+
+fn validate_prepared_dataset(args: ValidateArgs) -> Result<()> {
+    let report = match validate_dataset(args.out, args.strict) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("geodot validate: {error}");
+            std::process::exit(2);
+        }
+    };
+    println!();
+    println!("  geodot - dataset validation");
+    println!("  -------------------------------------");
+    for (label, key) in [
+        ("Tiles", "tiles"),
+        ("Patches", "patches"),
+        ("Variants", "variants"),
+        ("Places", "places"),
+        ("Query tiles", "query_tiles"),
+        ("Reference tiles", "reference_tiles"),
+        ("Warnings", "warnings"),
+        ("Errors", "errors"),
+    ] {
+        println!(
+            "  {label}: {}",
+            report.counts.get(key).copied().unwrap_or(0)
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("  WARNING: {warning}");
+    }
+    for error in &report.errors {
+        eprintln!("  ERROR: {error}");
+    }
+    if !report.valid {
+        std::process::exit(1);
+    }
     Ok(())
 }
 

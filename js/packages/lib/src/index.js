@@ -1,4 +1,11 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 
 export const TILE_SIZE = 256;
@@ -276,6 +283,160 @@ export async function renderDataset(options = {}) {
   await mkdir(path.dirname(output), { recursive: true });
   await writeFile(output, data);
   return { sourcePath: source, outputPath: output, bytes: data.byteLength };
+}
+
+export async function loadDataset(out = "data") {
+  const manifest = path.join(out, "vpr", "manifest");
+  const config = path.join(out, "vpr", "config");
+  const files = {
+    tiles: path.join(manifest, "tiles.json"),
+    patches: path.join(manifest, "patches.json"),
+    variants: path.join(manifest, "variants.json"),
+    places: path.join(manifest, "places.json"),
+    quality: path.join(manifest, "quality.json"),
+    dataset: path.join(config, "dataset.json"),
+  };
+  for (const file of Object.values(files)) await access(file);
+  const dataset = Object.fromEntries(
+    await Promise.all(
+      Object.entries(files).map(async ([name, file]) => [
+        name,
+        JSON.parse(await readFile(file, "utf8")),
+      ]),
+    ),
+  );
+  dataset._root = out;
+  return dataset;
+}
+
+export async function validateDataset(out = "data", options = {}) {
+  const errors = [];
+  let warnings = [];
+  let dataset;
+  try {
+    dataset = await loadDataset(out);
+  } catch (error) {
+    error.code = error.code ?? "GEODOT_MISSING_DATASET";
+    throw error;
+  }
+  const tileIds = checkUniqueIds("tile", dataset.tiles, "tile_id", errors);
+  const patchIds = checkUniqueIds("patch", dataset.patches, "patch_id", errors);
+  checkUniqueIds("variant", dataset.variants, "variant_id", errors);
+  checkUniqueIds("place", dataset.places, "place_id", errors);
+  for (const tile of dataset.tiles) {
+    if (!tile.path || !(await exists(path.join(out, tile.path))))
+      errors.push(
+        `missing source image for tile ${tile.tile_id}: ${tile.path}`,
+      );
+    if (!validBBox(tile.bbox))
+      errors.push(`invalid bbox for tile ${tile.tile_id}`);
+    if (
+      !positiveInteger(tile.image_width) ||
+      !positiveInteger(tile.image_height)
+    )
+      errors.push(`invalid image dimensions for tile ${tile.tile_id}`);
+  }
+  for (const patch of dataset.patches) {
+    if (!validBBox(patch.bbox))
+      errors.push(`invalid bbox for patch ${patch.patch_id}`);
+    for (const tileId of patch.source_tile_ids ?? patch.source_tiles ?? []) {
+      if (!tileIds.has(tileId))
+        errors.push(
+          `patch ${patch.patch_id} references missing tile ${tileId}`,
+        );
+    }
+  }
+  for (const variant of dataset.variants) {
+    if (!patchIds.has(variant.patch_id))
+      errors.push(
+        `variant ${variant.variant_id} references missing patch ${variant.patch_id}`,
+      );
+  }
+  for (const place of dataset.places) {
+    for (const field of ["tile_ids", "reference_tile_ids", "query_tile_ids"]) {
+      for (const tileId of place[field] ?? []) {
+        if (!tileIds.has(tileId))
+          errors.push(
+            `place ${place.place_id} ${field} references missing tile ${tileId}`,
+          );
+      }
+    }
+    for (const patchId of place.patch_ids ?? []) {
+      if (!patchIds.has(patchId))
+        errors.push(
+          `place ${place.place_id} references missing patch ${patchId}`,
+        );
+    }
+  }
+  for (const field of [
+    "images_modified",
+    "descriptors_computed",
+    "indexes_built",
+    "generated_images_default",
+  ]) {
+    if (dataset.dataset[field] !== false)
+      errors.push(`dataset config ${field} must be false`);
+  }
+  const generated = (await listFiles(path.join(out, "vpr"))).filter((file) =>
+    SUPPORTED_IMAGE_EXTENSIONS.includes(path.extname(file).toLowerCase()),
+  );
+  if (generated.length)
+    warnings.push(`found generated image(s) under vpr: ${generated.length}`);
+  if (options.strict && warnings.length) {
+    errors.push(...warnings);
+    warnings = [];
+  }
+  const counts = {
+    tiles: dataset.tiles.length,
+    patches: dataset.patches.length,
+    variants: dataset.variants.length,
+    places: dataset.places.length,
+    query_tiles: dataset.tiles.filter((tile) => tile.role === "query").length,
+    reference_tiles: dataset.tiles.filter((tile) => tile.role === "reference")
+      .length,
+    warnings: warnings.length,
+    errors: errors.length,
+  };
+  return { valid: errors.length === 0, errors, warnings, counts };
+}
+
+async function exists(file) {
+  return access(file).then(
+    () => true,
+    () => false,
+  );
+}
+
+function checkUniqueIds(kind, items, field, errors) {
+  const seen = new Set();
+  for (const item of items) {
+    const value = item[field];
+    if (!value || typeof value !== "string") {
+      errors.push(`${kind} missing ${field}`);
+    } else if (seen.has(value)) {
+      errors.push(`duplicate ${kind} id: ${value}`);
+    }
+    if (value) seen.add(value);
+  }
+  return seen;
+}
+
+function validBBox(value) {
+  return (
+    Array.isArray(value) &&
+    value.length === 4 &&
+    value.every(Number.isFinite) &&
+    value[0] < value[2] &&
+    value[1] < value[3] &&
+    value[0] >= -180 &&
+    value[2] <= 180 &&
+    value[1] >= -90 &&
+    value[3] <= 90
+  );
+}
+
+function positiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
 }
 
 export async function download(options = {}) {

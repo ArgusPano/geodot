@@ -77,6 +77,8 @@ geodot --geojson https://example.com/area.geojson -z 18 -o data
 geodot --prepare -o data
 
 geodot --prepare --geojson https://example.com/area.geojson -z 18 -o data
+
+geodot validate -o data
 ```
 
 | Flag | Default | Description |
@@ -98,6 +100,18 @@ geodot --prepare --geojson https://example.com/area.geojson -z 18 -o data
 | `--rotations` | `0,45,90,135,180,225,270,315` | Rotation variants to record for `--prepare` |
 | `--no-manifest` | off | Do not write `manifest.json` |
 | `--no-demo` | off | Do not write `index.html` |
+
+Subcommands:
+
+```bash
+geodot validate -o data
+geodot validate -o data --strict
+geodot render -o data --patch-id <patch_id> --out preview.jpg
+geodot render -o data --variant-id <variant_id> --out preview.jpg
+geodot demo -o data
+```
+
+`validate` checks that manifests parse, IDs are unique, references resolve, source images exist, bboxes and image dimensions are valid, dataset flags remain metadata-only, and preparation did not create images under `vpr/`. Warnings do not fail validation unless `--strict` is passed. Exit code `0` means valid, `1` means validation errors, and `2` means missing dataset/manifests or invalid command usage.
 
 ## Output
 
@@ -203,6 +217,31 @@ geodot render -o data --variant-id <variant_id> --out preview.jpg
 ```
 
 `render` writes exactly one requested preview file. It does not batch-render the dataset, modify source images, compute descriptors, or build indexes. The dependency-free renderer currently supports one-source-tile virtual patches; multi-tile mosaic rendering can be added later as an explicit preview feature.
+
+## Dataset contract for external descriptor tools
+
+`geodot` creates the image dataset and virtual patch metadata only. It intentionally does not extract descriptors, train models, build ANN indexes, or choose model-specific preprocessing.
+
+External descriptor tools should treat these IDs as stable dataset IDs:
+
+```text
+tile_id
+place_id
+patch_id
+variant_id
+```
+
+The usual downstream flow is:
+
+```python
+from geodot import load_dataset, render_variant
+
+dataset = load_dataset("data")
+image = render_variant(dataset, variant_id)
+# pass image bytes to DINOv3 / ResNet / VLAD / GeM outside geodot
+```
+
+Descriptor outputs should live outside `geodot`, or in a separate downstream folder, and reference `variant_id`. Re-running descriptors with DINOv3 SAT, ResNet, VLAD, GeM, NetVLAD, steerable CNNs, or another model should not require changing source images or regenerating the prepared dataset.
 
 Run `geodot demo` to inspect the downloaded tiles as a MapLibre raster overlay on a satellite base map at their tile coordinates and zoom. The demo serves `{out}/index.html` and reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg`; it does not depend on `manifest.json`. Use the corner opacity control to compare the overlay against the base map. Zooming is disabled because the output folder only contains the downloaded zoom level.
 

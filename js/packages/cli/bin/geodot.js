@@ -18,6 +18,7 @@ import {
   metersPerPixel,
   prepareDataset,
   renderDataset,
+  validateDataset,
 } from "@geodot/lib";
 
 const defaults = {
@@ -165,8 +166,62 @@ function parseIntegerList(value, flag) {
 
 function usage() {
   console.log(
-    'Usage: geodot [--prepare] [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--patch-sizes list] [--stride n] [--rotations list] [--no-manifest] [--no-demo]\n       geodot render -o data (--patch-id id | --variant-id id) --out preview.jpg\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
+    'Usage: geodot [--prepare] [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--patch-sizes list] [--stride n] [--rotations list] [--no-manifest] [--no-demo]\n       geodot validate -o data [--strict]\n       geodot render -o data (--patch-id id | --variant-id id) --out preview.jpg\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
   );
+}
+
+function parseValidateArgs(argv) {
+  const options = { out: "data", strict: false };
+  for (let i = 0; i < argv.length; ) {
+    if (argv[i] === "--strict") {
+      options.strict = true;
+      i += 1;
+      continue;
+    }
+    if (argv[i] === "-h" || argv[i] === "--help") {
+      usage();
+      process.exit(0);
+    }
+    if (
+      (argv[i] === "-o" || argv[i] === "--out") &&
+      argv[i + 1] !== undefined
+    ) {
+      options.out = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    usage();
+    process.exit(2);
+  }
+  return options;
+}
+
+async function runValidate(argv) {
+  const options = parseValidateArgs(argv);
+  let report;
+  try {
+    report = await validateDataset(options.out, { strict: options.strict });
+  } catch (error) {
+    console.error(`geodot validate: ${error.message}`);
+    process.exit(2);
+  }
+  console.log("\n  geodot - dataset validation");
+  console.log("  -------------------------------------");
+  for (const [label, key] of [
+    ["Tiles", "tiles"],
+    ["Patches", "patches"],
+    ["Variants", "variants"],
+    ["Places", "places"],
+    ["Query tiles", "query_tiles"],
+    ["Reference tiles", "reference_tiles"],
+    ["Warnings", "warnings"],
+    ["Errors", "errors"],
+  ]) {
+    console.log(`  ${label}: ${report.counts[key]}`);
+  }
+  for (const warning of report.warnings) console.error(`  WARNING: ${warning}`);
+  for (const error of report.errors) console.error(`  ERROR: ${error}`);
+  if (!report.valid) process.exit(1);
 }
 
 function parseRenderArgs(argv) {
@@ -423,6 +478,8 @@ if (process.argv[2] === "demo") {
   serveDemo(parseDemoArgs(process.argv.slice(3)));
 } else if (process.argv[2] === "render") {
   await runRender(process.argv.slice(3));
+} else if (process.argv[2] === "validate") {
+  await runValidate(process.argv.slice(3));
 } else {
   await runDownload();
 }

@@ -1,4 +1,4 @@
-use geodot::{DownloadOptions, PrepareOptions, download, prepare_dataset};
+use geodot::{DownloadOptions, PrepareOptions, download, prepare_dataset, validate_dataset};
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
@@ -9,6 +9,13 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TILE_BYTES: &[u8] = &[b'x'; 128];
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x64, 0xF8, 0xCF, 0x50,
+    0x0F, 0x00, 0x03, 0x86, 0x01, 0x80, 0x5A, 0x34, 0x7D, 0x6B, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
 const GEOJSON: &str = r#"{
   "type": "FeatureCollection",
   "features": [{
@@ -169,6 +176,35 @@ fn library_and_cli_prepare_existing_tiles() {
 
     fs::remove_dir_all(lib_out).unwrap();
     fs::remove_dir_all(cli_out).unwrap();
+}
+
+#[test]
+fn library_validate_checks_prepared_manifests() {
+    let out = temp_dir("geodot-lib-validate");
+    let source = out.join("drone-view/18/140140/97408.png");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, TINY_PNG).unwrap();
+    prepare_dataset(PrepareOptions {
+        out: out.clone(),
+        patch_sizes: vec![1],
+        stride: 1,
+        rotations: vec![0],
+        auto400m: false,
+    })
+    .unwrap();
+    let report = validate_dataset(&out, false).unwrap();
+    assert!(report.valid);
+    assert_eq!(report.counts["tiles"], 1);
+    assert_eq!(report.counts["query_tiles"], 1);
+
+    let patches_file = out.join("vpr/manifest/patches.json");
+    let mut patches: Value = serde_json::from_slice(&fs::read(&patches_file).unwrap()).unwrap();
+    patches[0]["source_tile_ids"] = serde_json::json!(["missing_tile"]);
+    fs::write(&patches_file, serde_json::to_vec(&patches).unwrap()).unwrap();
+    let invalid = validate_dataset(&out, false).unwrap();
+    assert!(!invalid.valid);
+    assert!(invalid.errors[0].contains("missing tile"));
+    fs::remove_dir_all(out).unwrap();
 }
 
 #[test]

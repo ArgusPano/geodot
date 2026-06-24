@@ -21,6 +21,7 @@ from geodot import (
     tile_grid_between,
     tile_grid_for_polygon,
     tile_path,
+    validate_dataset,
 )
 
 GEOJSON = {
@@ -244,3 +245,59 @@ def test_prepare_dataset_user_overrides_disable_auto400m(tmp_path: Path) -> None
     assert dataset["rotations"] == [0, 90]
     assert dataset["auto400m"] is False
     assert {variant["rotation_degrees"] for variant in variants} == {0, 90}
+
+
+def test_validate_dataset_reports_consistency_errors_and_warnings(tmp_path: Path) -> None:
+    path = tmp_path / "tiles" / "18" / "140140" / "97408.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(TINY_PNG)
+    prepare_dataset(PrepareOptions(out=tmp_path, patch_sizes=(1,), rotations=(0,), auto400m=False))
+
+    report = validate_dataset(tmp_path)
+    assert report.valid is True
+    assert report.counts["tiles"] == 1
+    assert report.counts["reference_tiles"] == 1
+
+    generated = tmp_path / "vpr" / "preview.png"
+    generated.write_bytes(TINY_PNG)
+    report = validate_dataset(tmp_path)
+    assert report.valid is True
+    assert report.counts["warnings"] == 1
+    strict = validate_dataset(tmp_path, strict=True)
+    assert strict.valid is False
+    assert strict.counts["errors"] == 1
+    generated.unlink()
+
+    patches_file = tmp_path / "vpr" / "manifest" / "patches.json"
+    patches = json.loads(patches_file.read_text(encoding="utf-8"))
+    patches[0]["source_tile_ids"] = ["missing_tile"]
+    patches_file.write_text(json.dumps(patches), encoding="utf-8")
+    assert "references missing tile" in validate_dataset(tmp_path).errors[0]
+
+    patches[0]["source_tile_ids"] = ["tiles_default_z18_x140140_y97408"]
+    patches[0]["bbox"] = [10, 10, 9, 11]
+    patches_file.write_text(json.dumps(patches), encoding="utf-8")
+    assert "invalid bbox" in validate_dataset(tmp_path).errors[0]
+
+    patches[0]["bbox"] = [12.45, 41.9, 12.46, 41.91]
+    patches.append({**patches[0]})
+    patches_file.write_text(json.dumps(patches), encoding="utf-8")
+    assert "duplicate patch id" in validate_dataset(tmp_path).errors[0]
+
+
+def test_validate_dataset_fails_missing_patch_and_source(tmp_path: Path) -> None:
+    path = tmp_path / "tiles" / "18" / "140140" / "97408.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(TINY_PNG)
+    prepare_dataset(PrepareOptions(out=tmp_path, patch_sizes=(1,), rotations=(0,), auto400m=False))
+
+    variants_file = tmp_path / "vpr" / "manifest" / "variants.json"
+    variants = json.loads(variants_file.read_text(encoding="utf-8"))
+    variants[0]["patch_id"] = "missing_patch"
+    variants_file.write_text(json.dumps(variants), encoding="utf-8")
+    assert "references missing patch" in validate_dataset(tmp_path).errors[0]
+
+    variants[0]["patch_id"] = "tiles_default_z18_x140140-140140_y97408-97408_s1"
+    variants_file.write_text(json.dumps(variants), encoding="utf-8")
+    path.unlink()
+    assert "missing source image" in validate_dataset(tmp_path).errors[0]

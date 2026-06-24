@@ -22,6 +22,7 @@ from .core import (
     prepare_dataset,
     render_dataset,
     resolve_options,
+    validate_dataset,
 )
 
 
@@ -31,6 +32,9 @@ def main() -> None:
         return
     if len(sys.argv) > 1 and sys.argv[1] == "render":
         _render(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "validate":
+        _validate(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(description="Download satellite map tiles (256x256 px).")
@@ -154,6 +158,37 @@ def _render(argv: list[str]) -> None:
     print(f"  Source: {report.source_path}")
     print(f"  Output: {report.output_path}")
     print(f"  Bytes:  {report.bytes}")
+
+
+def _validate(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(description="Validate a prepared VPR dataset.")
+    parser.add_argument("-o", "--out", default="data", help="prepared dataset directory")
+    parser.add_argument("--strict", action="store_true", help="treat warnings as errors")
+    args = parser.parse_args(argv)
+    try:
+        report = validate_dataset(args.out, strict=args.strict)
+    except FileNotFoundError as error:
+        print(f"geodot validate: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
+    print("\n  geodot - dataset validation")
+    print("  -------------------------------------")
+    for label, key in (
+        ("Tiles", "tiles"),
+        ("Patches", "patches"),
+        ("Variants", "variants"),
+        ("Places", "places"),
+        ("Query tiles", "query_tiles"),
+        ("Reference tiles", "reference_tiles"),
+        ("Warnings", "warnings"),
+        ("Errors", "errors"),
+    ):
+        print(f"  {label}: {report.counts[key]}")
+    for warning in report.warnings:
+        print(f"  WARNING: {warning}", file=sys.stderr)
+    for error in report.errors:
+        print(f"  ERROR: {error}", file=sys.stderr)
+    if not report.valid:
+        raise SystemExit(1)
 
 
 def _progress_printer(phase: str, total: int | None = None):

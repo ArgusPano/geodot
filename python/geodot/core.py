@@ -109,6 +109,14 @@ class RenderReport:
     bytes: int
 
 
+@dataclass(frozen=True)
+class ValidationReport:
+    valid: bool
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+    counts: dict[str, int]
+
+
 def latlon_to_tile(lat: float, lon: float, z: int) -> Tile:
     n = 2**z
     x = math.floor((lon + 180.0) / 360.0 * n)
@@ -371,6 +379,158 @@ def render_dataset(
     data = source.read_bytes()
     target.write_bytes(data)
     return RenderReport(source_path=str(source), output_path=str(target), bytes=len(data))
+
+
+def load_dataset(out: str | Path = "data") -> dict[str, Any]:
+    root = Path(out)
+    manifest = root / "vpr" / "manifest"
+    config = root / "vpr" / "config"
+    files = {
+        "tiles": manifest / "tiles.json",
+        "patches": manifest / "patches.json",
+        "variants": manifest / "variants.json",
+        "places": manifest / "places.json",
+        "quality": manifest / "quality.json",
+        "dataset": config / "dataset.json",
+    }
+    missing = [str(path) for path in files.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing dataset manifest(s): " + ", ".join(missing))
+    dataset = {name: json.loads(path.read_text(encoding="utf-8")) for name, path in files.items()}
+    dataset["_root"] = str(root)
+    return dataset
+
+
+def render_variant(dataset: dict[str, Any], variant_id: str) -> bytes:
+    variants = dataset["variants"]
+    patches = dataset["patches"]
+    tiles = dataset["tiles"]
+    variant = next((item for item in variants if item.get("variant_id") == variant_id), None)
+    if variant is None:
+        raise ValueError(f"variant not found: {variant_id}")
+    patch = next((item for item in patches if item.get("patch_id") == variant.get("patch_id")), None)
+    if patch is None:
+        raise ValueError(f"patch not found: {variant.get('patch_id')}")
+    source_tile_ids = patch.get("source_tile_ids") or patch.get("source_tiles") or []
+    if len(source_tile_ids) != 1:
+        raise ValueError("render_variant currently supports one-source-tile virtual patches only")
+    tile = next((item for item in tiles if item.get("tile_id") == source_tile_ids[0]), None)
+    if tile is None:
+        raise ValueError(f"source tile not found: {source_tile_ids[0]}")
+    return (Path(dataset.get("_root", ".")) / tile["path"]).read_bytes()
+
+
+def validate_dataset(out: str | Path = "data", *, strict: bool = False) -> ValidationReport:
+    root = Path(out)
+    errors: list[str] = []
+    warnings: list[str] = []
+    try:
+        dataset = load_dataset(root)
+    except FileNotFoundError:
+        raise
+    except (json.JSONDecodeError, OSError) as error:
+        return ValidationReport(False, (f"failed to parse dataset: {error}",), (), _empty_validation_counts())
+
+    tiles = dataset["tiles"]
+    patches = dataset["patches"]
+    variants = dataset["variants"]
+    places = dataset["places"]
+    config = dataset["dataset"]
+    tile_ids = _check_unique_ids("tile", tiles, "tile_id", errors)
+    patch_ids = _check_unique_ids("patch", patches, "patch_id", errors)
+    _check_unique_ids("variant", variants, "variant_id", errors)
+    _check_unique_ids("place", places, "place_id", errors)
+
+    for tile in tiles:
+        path = tile.get("path")
+        if not isinstance(path, str) or not (root / path).exists():
+            errors.append(f"missing source image for tile {tile.get('tile_id')}: {path}")
+        if not _valid_bbox(tile.get("bbox")):
+            errors.append(f"invalid bbox for tile {tile.get('tile_id')}")
+        if not _positive_int(tile.get("image_width")) or not _positive_int(tile.get("image_height")):
+            errors.append(f"invalid image dimensions for tile {tile.get('tile_id')}")
+
+    for patch in patches:
+        if not _valid_bbox(patch.get("bbox")):
+            errors.append(f"invalid bbox for patch {patch.get('patch_id')}")
+        for tile_id in patch.get("source_tile_ids") or patch.get("source_tiles") or []:
+            if tile_id not in tile_ids:
+                errors.append(f"patch {patch.get('patch_id')} references missing tile {tile_id}")
+
+    for variant in variants:
+        patch_id = variant.get("patch_id")
+        if patch_id not in patch_ids:
+            errors.append(f"variant {variant.get('variant_id')} references missing patch {patch_id}")
+
+    for place in places:
+        for field in ("tile_ids", "reference_tile_ids", "query_tile_ids"):
+            for tile_id in place.get(field, []):
+                if tile_id not in tile_ids:
+                    errors.append(f"place {place.get('place_id')} {field} references missing tile {tile_id}")
+        for patch_id in place.get("patch_ids", []):
+            if patch_id not in patch_ids:
+                errors.append(f"place {place.get('place_id')} references missing patch {patch_id}")
+
+    for field in ("images_modified", "descriptors_computed", "indexes_built", "generated_images_default"):
+        if config.get(field) is not False:
+            errors.append(f"dataset config {field} must be false")
+
+    generated = [path for path in (root / "vpr").rglob("*") if path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS]
+    if generated:
+        warnings.append(f"found generated image(s) under vpr: {len(generated)}")
+    if strict and warnings:
+        errors.extend(warnings)
+        warnings = []
+    counts = {
+        "tiles": len(tiles),
+        "patches": len(patches),
+        "variants": len(variants),
+        "places": len(places),
+        "query_tiles": sum(1 for tile in tiles if tile.get("role") == "query"),
+        "reference_tiles": sum(1 for tile in tiles if tile.get("role") == "reference"),
+        "warnings": len(warnings),
+        "errors": len(errors),
+    }
+    return ValidationReport(not errors, tuple(errors), tuple(warnings), counts)
+
+
+def _empty_validation_counts() -> dict[str, int]:
+    return {
+        "tiles": 0,
+        "patches": 0,
+        "variants": 0,
+        "places": 0,
+        "query_tiles": 0,
+        "reference_tiles": 0,
+        "warnings": 0,
+        "errors": 1,
+    }
+
+
+def _check_unique_ids(kind: str, items: list[dict[str, Any]], field: str, errors: list[str]) -> set[str]:
+    seen: set[str] = set()
+    for item in items:
+        value = item.get(field)
+        if not isinstance(value, str) or not value:
+            errors.append(f"{kind} missing {field}")
+            continue
+        if value in seen:
+            errors.append(f"duplicate {kind} id: {value}")
+        seen.add(value)
+    return seen
+
+
+def _valid_bbox(value: object) -> bool:
+    if not isinstance(value, list) or len(value) != 4:
+        return False
+    if not all(isinstance(item, int | float) and math.isfinite(item) for item in value):
+        return False
+    lon_min, lat_min, lon_max, lat_max = value
+    return -180 <= lon_min < lon_max <= 180 and -90 <= lat_min < lat_max <= 90
+
+
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def download(options: DownloadOptions | None = None) -> DownloadReport:

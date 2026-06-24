@@ -203,6 +203,46 @@ def test_cli_render_writes_only_requested_preview(tmp_path: Path) -> None:
     assert not list((tmp_path / "vpr").rglob("*.webp"))
 
 
+def test_cli_validate_exit_codes(tmp_path: Path) -> None:
+    missing = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "validate", "-o", str(tmp_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert missing.returncode == 2
+
+    source = tmp_path / "tiles" / "18" / "140140" / "97408.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(TINY_PNG)
+    subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "--prepare", "-o", str(tmp_path), "--patch-sizes", "1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    valid = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "validate", "-o", str(tmp_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert valid.returncode == 0
+    assert "Errors: 0" in valid.stdout
+
+    (tmp_path / "vpr" / "preview.png").write_bytes(TINY_PNG)
+    warning = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "validate", "-o", str(tmp_path)],
+        capture_output=True,
+        text=True,
+    )
+    strict = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "validate", "-o", str(tmp_path), "--strict"],
+        capture_output=True,
+        text=True,
+    )
+    assert warning.returncode == 0
+    assert strict.returncode == 1
+
+
 def test_cli_download_accepts_geojson_url(tmp_path: Path) -> None:
     with tile_server() as template:
         geojson_url = template.split("/{z}", 1)[0] + "/area.geojson"
