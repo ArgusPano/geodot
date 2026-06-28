@@ -345,7 +345,7 @@ def test_cli_top_level_help_and_version() -> None:
         text=True,
     )
     assert short_version.returncode == 0
-    assert short_version.stdout == "0.1.11\n"
+    assert short_version.stdout == "0.1.12\n"
 
     long_version = subprocess.run(
         [sys.executable, "-m", "geodot.cli", "--version"],
@@ -353,7 +353,7 @@ def test_cli_top_level_help_and_version() -> None:
         text=True,
     )
     assert long_version.returncode == 0
-    assert long_version.stdout == "0.1.11\n"
+    assert long_version.stdout == "0.1.12\n"
 
 
 def test_cli_requires_coordinates_for_grid_downloads() -> None:

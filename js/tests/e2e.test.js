@@ -245,13 +245,13 @@ test("CLI exposes top-level help and version", async () => {
     "js/packages/cli/bin/geodot.js",
     "-v",
   ]);
-  assert.match(shortVersion.stdout, /^0\.1\.11\n$/);
+  assert.match(shortVersion.stdout, /^0\.1\.12\n$/);
 
   const longVersion = await execFileAsync(process.execPath, [
     "js/packages/cli/bin/geodot.js",
     "--version",
   ]);
-  assert.match(longVersion.stdout, /^0\.1\.11\n$/);
+  assert.match(longVersion.stdout, /^0\.1\.12\n$/);
 });
 
 test("CLI requires coordinates for grid downloads", async () => {

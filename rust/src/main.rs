@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use clap::builder::ArgAction;
 use clap::{CommandFactory, Parser};
 use geodot::{
     Coordinate, DownloadOptions, DownloadProgress, MAX_ZOOM, PrepareOptions, SelectionProgress,
@@ -22,9 +23,14 @@ const EMPTY_PNG: &[u8] = &[
 #[command(
     name = "geodot",
     about = "Download satellite map tiles (256x256 px).",
-    version
+    version,
+    disable_version_flag = true
 )]
 struct Args {
+    /// Print version
+    #[arg(short = 'v', long = "version", action = ArgAction::SetTrue)]
+    version: bool,
+
     /// Latitude of the top-left point
     #[arg(short = 'y', long, value_parser = parse_finite_f64)]
     lat: Option<f64>,
@@ -185,6 +191,10 @@ async fn main() -> Result<()> {
     }
 
     let args = Args::parse();
+    if args.version {
+        println!(env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.prepare {
         let should_download = args.geojson.is_some()
             || args.polygon.is_some()

@@ -318,14 +318,14 @@ fn cli_exposes_top_level_help_and_version() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.11\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.12\n");
 
     let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
         .arg("--version")
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.11\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.12\n");
 }
 
 #[test]
