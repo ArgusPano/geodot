@@ -512,3 +512,10 @@ npm run lint
 cargo fmt --manifest-path rust/Cargo.toml -- --check
 cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 ```
+
+Install the local pre-commit hook to run format, lint, and tests before every commit:
+
+```bash
+cp scripts/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```

@@ -88,7 +88,7 @@ const ranges = {
 
 function parseArgs(argv) {
   const options = { ...defaults };
-  for (let i = 0; i < argv.length; ) {
+  for (let i = 0; i < argv.length;) {
     if (argv[i] === "-h" || argv[i] === "--help") {
       usage();
       process.exit(0);
@@ -178,7 +178,7 @@ function usage() {
 
 function parseValidateArgs(argv) {
   const options = { out: "data", strict: false };
-  for (let i = 0; i < argv.length; ) {
+  for (let i = 0; i < argv.length;) {
     if (argv[i] === "--strict") {
       options.strict = true;
       i += 1;
@@ -237,7 +237,7 @@ function parseRenderArgs(argv) {
     patchId: undefined,
     variantId: undefined,
   };
-  for (let i = 0; i < argv.length; ) {
+  for (let i = 0; i < argv.length;) {
     const value = argv[i + 1];
     if (argv[i] === "-h" || argv[i] === "--help") {
       usage();
@@ -279,7 +279,7 @@ async function runRender(argv) {
 
 function parseDemoArgs(argv) {
   const options = { out: "data", host: "127.0.0.1", port: 8000, open: true };
-  for (let i = 0; i < argv.length; ) {
+  for (let i = 0; i < argv.length;) {
     if (argv[i] === "-h" || argv[i] === "--help") {
       usage();
       process.exit(0);

@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+echo "Running JavaScript format, lint, and tests..."
+npm run format:check
+npm run lint
+npm test
+
+echo "Running Python format, lint, and tests..."
+ruff format --check python
+ruff check python
+PYTHONPATH=python pytest
+
+echo "Running Rust format, lint, and tests..."
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path rust/Cargo.toml
