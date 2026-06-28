@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use futures::stream::{self, StreamExt};
-use rand::seq::SliceRandom;
+use rand::prelude::IndexedRandom;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
@@ -1734,7 +1734,7 @@ fn tile_url(subdomain: &str, tile: Tile, tile_url_template: Option<&str>) -> Str
 }
 
 fn random_ua() -> &'static str {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     USER_AGENTS.choose(&mut rng).unwrap_or(&USER_AGENTS[0])
 }
 

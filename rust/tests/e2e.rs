@@ -294,6 +294,51 @@ fn cli_exposes_demo_command_help() {
 }
 
 #[test]
+fn cli_exposes_top_level_help_and_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot")).output().unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .arg("-h")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--version"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--version"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .arg("-v")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.11\n");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.11\n");
+}
+
+#[test]
+fn cli_requires_coordinates_for_grid_downloads() {
+    let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
+        .args(["-z", "18"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires -x/--lon and -y/--lat"));
+}
+
+#[test]
 fn cli_rejects_invalid_numeric_options() {
     let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
         .args(["-j", "https://example.com/area.geojson"])

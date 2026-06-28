@@ -22,8 +22,8 @@ import {
 } from "@geodot/lib";
 
 const defaults = {
-  lat: 55.7303,
-  lon: 37.6504907,
+  lat: undefined,
+  lon: undefined,
   bottomRightLat: undefined,
   bottomRightLon: undefined,
   polygon: undefined,
@@ -40,6 +40,8 @@ const defaults = {
   stride: 1,
   rotations: undefined,
 };
+
+const VERSION = "0.1.11";
 
 const flags = {
   "-y": "lat",
@@ -89,6 +91,10 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; ) {
     if (argv[i] === "-h" || argv[i] === "--help") {
       usage();
+      process.exit(0);
+    }
+    if (argv[i] === "-v" || argv[i] === "--version") {
+      console.log(VERSION);
       process.exit(0);
     }
     const booleanKey = booleanFlags[argv[i]];
@@ -166,7 +172,7 @@ function parseIntegerList(value, flag) {
 
 function usage() {
   console.log(
-    'Usage: geodot [--prepare] [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--patch-sizes list] [--stride n] [--rotations list] [--no-manifest] [--no-demo]\n       geodot validate -o data [--strict]\n       geodot render -o data (--patch-id id | --variant-id id) --out preview.jpg\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
+    'Usage: geodot [-h|--help] [-v|--version]\n       geodot [--prepare] [-x lon] [-y lat] [--x2 lon --y2 lat] [-p|--polygon "lon,lat;lon,lat;lon,lat"] [-g|--geojson file-or-url] [-z zoom] [-c cols] [-r rows] [-o out] [-j jobs] [--patch-sizes list] [--stride n] [--rotations list] [--no-manifest] [--no-demo]\n       geodot validate -o data [--strict]\n       geodot render -o data (--patch-id id | --variant-id id) --out preview.jpg\n       geodot demo [-o out] [--host host] [--port port] [--no-open]',
   );
 }
 
@@ -390,6 +396,7 @@ async function runDownload() {
   if (options.geojson && !options.polygon) {
     options.polygon = await loadGeoJSONPolygon(options.geojson);
   }
+  applySelectionOrigin(options);
   const start = performance.now();
   const center = latlonToTile(options.lat, options.lon, options.zoom);
 
@@ -440,6 +447,20 @@ async function runDownload() {
   }
 }
 
+function applySelectionOrigin(options) {
+  if (options.lat !== undefined && options.lon !== undefined) return;
+  if (options.polygon?.length) {
+    options.lat = Math.max(...options.polygon.map((point) => point.lat));
+    options.lon = Math.min(...options.polygon.map((point) => point.lon));
+    return;
+  }
+  console.error(
+    "geodot requires -x/--lon and -y/--lat for grid or rectangle downloads",
+  );
+  usage();
+  process.exit(1);
+}
+
 function printPrepareReport(report) {
   console.log("\n  geodot - dataset preparation");
   console.log("  -------------------------------------");
@@ -474,7 +495,11 @@ function progressPrinter(phase, total) {
   };
 }
 
-if (process.argv[2] === "demo") {
+if (process.argv.length === 2) {
+  usage();
+} else if (process.argv[2] === "-v" || process.argv[2] === "--version") {
+  console.log(VERSION);
+} else if (process.argv[2] === "demo") {
   serveDemo(parseDemoArgs(process.argv.slice(3)));
 } else if (process.argv[2] === "render") {
   await runRender(process.argv.slice(3));

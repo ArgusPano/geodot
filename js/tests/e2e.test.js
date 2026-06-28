@@ -223,6 +223,51 @@ test("CLI exposes demo command help", async () => {
   assert.match(stdout, /--no-open/);
 });
 
+test("CLI exposes top-level help and version", async () => {
+  const help = await execFileAsync(process.execPath, [
+    "js/packages/cli/bin/geodot.js",
+  ]);
+  assert.match(help.stdout, /Usage: geodot/);
+
+  const shortHelp = await execFileAsync(process.execPath, [
+    "js/packages/cli/bin/geodot.js",
+    "-h",
+  ]);
+  assert.match(shortHelp.stdout, /--version/);
+
+  const longHelp = await execFileAsync(process.execPath, [
+    "js/packages/cli/bin/geodot.js",
+    "--help",
+  ]);
+  assert.match(longHelp.stdout, /--version/);
+
+  const shortVersion = await execFileAsync(process.execPath, [
+    "js/packages/cli/bin/geodot.js",
+    "-v",
+  ]);
+  assert.match(shortVersion.stdout, /^0\.1\.11\n$/);
+
+  const longVersion = await execFileAsync(process.execPath, [
+    "js/packages/cli/bin/geodot.js",
+    "--version",
+  ]);
+  assert.match(longVersion.stdout, /^0\.1\.11\n$/);
+});
+
+test("CLI requires coordinates for grid downloads", async () => {
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      "js/packages/cli/bin/geodot.js",
+      "-z",
+      "18",
+    ]),
+    (error) => {
+      assert.match(error.stderr, /requires -x\/--lon and -y\/--lat/);
+      return true;
+    },
+  );
+});
+
 test("CLI rejects invalid numeric options", async () => {
   await assert.rejects(
     execFileAsync(process.execPath, [

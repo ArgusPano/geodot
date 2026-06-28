@@ -38,6 +38,8 @@ Choose the ecosystem that matches how you want to run or embed `geodot`.
 | npm library | `npm install @geodot/lib` | JavaScript library |
 | Python | `pip install geodot` | `geodot` CLI and Python package |
 
+Supported runtimes are Node.js 18 or newer, Python 3.10 or newer, and Rust 1.85 or newer.
+
 Run without a global npm or Python install:
 
 ```bash
@@ -49,7 +51,17 @@ Rust uses `cargo install geodot` to install the CLI binary before running `geodo
 
 ## Quick Start
 
-Download a 3 by 3 grid of tiles at zoom 18:
+Show CLI help or the installed package version:
+
+```bash
+geodot
+geodot --help
+geodot --version
+```
+
+Running `geodot` without arguments prints help and does not download tiles.
+
+Download commands are explicit. For example, download a 3 by 3 grid of tiles at zoom 18:
 
 ```bash
 geodot -x 37.6504907 -y 55.7303 -z 18 -c 3 -r 3 -o data -j 16
@@ -119,6 +131,7 @@ Polygon coordinates use `lon,lat` pairs. The closing edge is implicit.
 | Polygon download | `geodot -p "37.6504,55.7304;37.6520,55.7304;37.6520,55.7297;37.6504,55.7297" -z 18 -o data` |
 | Local GeoJSON download | `geodot --geojson area.geojson -z 18 -o data` |
 | Remote GeoJSON download | `geodot --geojson https://example.com/area.geojson -z 18 -o data` |
+| Remote country GeoJSON download | `geodot -g "https://raw.githubusercontent.com/georgique/world-geojson/refs/heads/develop/countries/vatican.json" --out data` |
 | Prepare existing local tiles | `geodot --prepare -o data` |
 | Download GeoJSON area and prepare | `geodot --prepare --geojson https://example.com/area.geojson -z 18 -o data` |
 | Validate prepared dataset | `geodot validate -o data` |
@@ -131,8 +144,10 @@ Polygon coordinates use `lon,lat` pairs. The closing edge is implicit.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-x`, `--lon` | `37.6504907` | Longitude for the grid/rectangle starting point. |
-| `-y`, `--lat` | `55.7303` | Latitude for the grid/rectangle starting point. |
+| `-h`, `--help` | n/a | Print help and exit. Running `geodot` without arguments also prints help. |
+| `-v`, `--version` | n/a | Print the installed package version and exit. |
+| `-x`, `--lon` | none | Longitude for the grid/rectangle starting point. Required unless `--polygon` or `--geojson` is used. |
+| `-y`, `--lat` | none | Latitude for the grid/rectangle starting point. Required unless `--polygon` or `--geojson` is used. |
 | `--x2`, `--bottom-right-lon` | none | Rectangle bottom-right longitude. |
 | `--y2`, `--bottom-right-lat` | none | Rectangle bottom-right latitude. |
 | `-p`, `--polygon` | none | Polygon as `lon,lat;lon,lat;lon,lat`. |
@@ -474,7 +489,7 @@ Approximate resolution near the default latitude (`55.7303`):
 Install local Python test dependencies and run the Python tests:
 
 ```bash
-python -m pip install -e '.[test]'
+python -m pip install -e '.[test,dev]'
 python -m pytest
 ```
 

@@ -314,6 +314,58 @@ def test_cli_demo_help() -> None:
     assert "--no-open" in result.stdout
 
 
+def test_cli_top_level_help_and_version() -> None:
+    help_result = subprocess.run(
+        [sys.executable, "-m", "geodot.cli"],
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0
+    assert "usage: " in help_result.stdout
+
+    short_help = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "-h"],
+        capture_output=True,
+        text=True,
+    )
+    assert short_help.returncode == 0
+    assert "--version" in short_help.stdout
+
+    long_help = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert long_help.returncode == 0
+    assert "--version" in long_help.stdout
+
+    short_version = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "-v"],
+        capture_output=True,
+        text=True,
+    )
+    assert short_version.returncode == 0
+    assert short_version.stdout == "0.1.11\n"
+
+    long_version = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "--version"],
+        capture_output=True,
+        text=True,
+    )
+    assert long_version.returncode == 0
+    assert long_version.stdout == "0.1.11\n"
+
+
+def test_cli_requires_coordinates_for_grid_downloads() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "geodot.cli", "-z", "18"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "requires -x/--lon and -y/--lat" in result.stderr
+
+
 def test_cli_rejects_invalid_numeric_options() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "geodot.cli", "-j", "https://example.com/area.geojson"],

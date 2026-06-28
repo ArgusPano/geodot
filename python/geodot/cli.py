@@ -11,6 +11,7 @@ import webbrowser
 from dataclasses import replace
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+from . import __version__
 from .core import (
     Coordinate,
     DownloadOptions,
@@ -18,6 +19,7 @@ from .core import (
     count_tiles_for_options,
     download,
     latlon_to_tile,
+    load_geojson_polygon,
     meters_per_pixel,
     prepare_dataset,
     render_dataset,
@@ -38,8 +40,9 @@ def main() -> None:
         return
 
     parser = argparse.ArgumentParser(description="Download satellite map tiles (256x256 px).")
-    parser.add_argument("-y", "--lat", type=_finite_float, default=55.7303, help="top-left latitude")
-    parser.add_argument("-x", "--lon", type=_finite_float, default=37.6504907, help="top-left longitude")
+    parser.add_argument("-v", "--version", action="version", version=__version__)
+    parser.add_argument("-y", "--lat", type=_finite_float, help="top-left latitude")
+    parser.add_argument("-x", "--lon", type=_finite_float, help="top-left longitude")
     parser.add_argument(
         "--y2", "--bottom-right-lat", dest="bottom_right_lat", type=_finite_float, help="bottom-right latitude"
     )
@@ -59,6 +62,9 @@ def main() -> None:
     parser.add_argument("--rotations", type=_parse_int_list, default=None, help="rotation variants for --prepare")
     parser.add_argument("--no-manifest", action="store_true", help="do not write manifest.json")
     parser.add_argument("--no-demo", action="store_true", help="do not write index.html")
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return
     args = parser.parse_args()
 
     start = time.perf_counter()
@@ -84,18 +90,23 @@ def main() -> None:
         )
         return
 
+    polygon = args.polygon
+    if args.geojson and not polygon:
+        polygon = load_geojson_polygon(args.geojson)
+    lat, lon = _selection_origin(args.lat, args.lon, polygon)
+    download_args.update({"lat": lat, "lon": lon, "polygon": polygon or []})
     options = resolve_options(DownloadOptions(**download_args))
-    center = latlon_to_tile(args.lat, args.lon, args.zoom)
+    center = latlon_to_tile(options.lat, options.lon, options.zoom)
     print("\n  geodot - satellite tiles")
     print("  -------------------------------------")
-    print(f"  Top-left: {args.lat} {args.lon}")
-    print(f"  Tile:    ({center.x}, {center.y})  at zoom {args.zoom}")
+    print(f"  Top-left: {options.lat} {options.lon}")
+    print(f"  Tile:    ({center.x}, {center.y})  at zoom {options.zoom}")
     print("  Selecting tiles...")
     selecting = _progress_printer("select")
     selected_tile_count = count_tiles_for_options(options, selecting)
     print(f"  Tiles:   {selected_tile_count}")
-    print(f"  m/px:    {meters_per_pixel(args.lat, args.zoom):.2f}")
-    print(f"  Output:  {args.out}\n")
+    print(f"  m/px:    {meters_per_pixel(options.lat, options.zoom):.2f}")
+    print(f"  Output:  {options.out}\n")
 
     downloading = _progress_printer("download", selected_tile_count)
     report = download(replace(options, on_progress=downloading))
@@ -138,6 +149,14 @@ def _print_prepare_report(report) -> None:
     print(f"  Patches:  {report.patches}")
     print(f"  Variants: {report.variants}")
     print(f"  Output:   {report.path}")
+
+
+def _selection_origin(lat: float | None, lon: float | None, polygon: list[Coordinate] | None) -> tuple[float, float]:
+    if lat is not None and lon is not None:
+        return lat, lon
+    if polygon:
+        return max(point.lat for point in polygon), min(point.lon for point in polygon)
+    raise SystemExit("geodot requires -x/--lon and -y/--lat for grid or rectangle downloads")
 
 
 def _render(argv: list[str]) -> None:

@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use geodot::{
     Coordinate, DownloadOptions, DownloadProgress, MAX_ZOOM, PrepareOptions, SelectionProgress,
     count_tiles_for_options_with_progress, download_with_progress, load_geojson_polygon,
@@ -26,12 +26,12 @@ const EMPTY_PNG: &[u8] = &[
 )]
 struct Args {
     /// Latitude of the top-left point
-    #[arg(short = 'y', long, default_value = "55.7303", value_parser = parse_finite_f64)]
-    lat: f64,
+    #[arg(short = 'y', long, value_parser = parse_finite_f64)]
+    lat: Option<f64>,
 
     /// Longitude of the top-left point
-    #[arg(short = 'x', long, default_value = "37.6504907", value_parser = parse_finite_f64)]
-    lon: f64,
+    #[arg(short = 'x', long, value_parser = parse_finite_f64)]
+    lon: Option<f64>,
 
     /// Latitude of the bottom-right point
     #[arg(long = "y2", alias = "bottom-right-lat", value_parser = parse_finite_f64)]
@@ -157,6 +157,15 @@ async fn main() -> Result<()> {
     let mut raw_args = std::env::args();
     let program = raw_args.next().unwrap_or_else(|| "geodot".to_string());
     match raw_args.next().as_deref() {
+        None => {
+            Args::command().print_help()?;
+            println!();
+            return Ok(());
+        }
+        Some("-v" | "--version") => {
+            println!(env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
         Some("demo") => {
             let args = std::iter::once(format!("{program} demo")).chain(raw_args);
             serve_demo(DemoArgs::parse_from(args))?;
@@ -206,9 +215,10 @@ async fn main() -> Result<()> {
         (None, Some(source)) => load_geojson_polygon(source).await?,
         (None, None) => Vec::new(),
     };
+    let (lat, lon) = selection_origin(args.lat, args.lon, &polygon)?;
     let options = DownloadOptions {
-        lat: args.lat,
-        lon: args.lon,
+        lat,
+        lon,
         bottom_right_lat: args.bottom_right_lat,
         bottom_right_lon: args.bottom_right_lon,
         polygon,
@@ -292,6 +302,30 @@ async fn main() -> Result<()> {
         print_prepare_report(&report);
     }
     Ok(())
+}
+
+fn selection_origin(
+    lat: Option<f64>,
+    lon: Option<f64>,
+    polygon: &[Coordinate],
+) -> Result<(f64, f64)> {
+    if let (Some(lat), Some(lon)) = (lat, lon) {
+        return Ok((lat, lon));
+    }
+    if !polygon.is_empty() {
+        let lat = polygon
+            .iter()
+            .map(|point| point.lat)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let lon = polygon
+            .iter()
+            .map(|point| point.lon)
+            .fold(f64::INFINITY, f64::min);
+        return Ok((lat, lon));
+    }
+    Err(anyhow!(
+        "geodot requires -x/--lon and -y/--lat for grid or rectangle downloads"
+    ))
 }
 
 fn render_preview(args: RenderArgs) -> Result<()> {
