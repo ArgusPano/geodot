@@ -238,10 +238,15 @@ fn cli_can_skip_manifest_and_still_write_demo() {
     let demo = fs::read_to_string(out.join("index.html")).unwrap();
     assert!(demo.contains("maplibregl.Map"));
     assert!(demo.contains("World_Imagery"));
-    assert!(demo.contains("./tiles/{z}/{x}/{y}.jpg"));
+    assert!(demo.contains("./tiles/${tile.z}/${tile.x}/${tile.y}.jpg"));
     assert!(!demo.contains("%7Bz%7D"));
-    assert!(demo.contains("minZoom: data.zoom"));
-    assert!(!demo.contains("fitBounds"));
+    assert!(demo.contains("geodot-labels"));
+    assert!(demo.contains("Jump to tile"));
+    assert!(demo.contains("labelsToggle"));
+    assert!(demo.contains("themeToggle"));
+    assert!(demo.contains("togglePanel"));
+    assert!(demo.contains("minZoom: Math.max(0, data.zoom - 8)"));
+    assert!(demo.contains("fitBounds"));
 
     server.join().unwrap();
     fs::remove_dir_all(out).unwrap();
@@ -318,14 +323,14 @@ fn cli_exposes_top_level_help_and_version() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.12\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.13\n");
 
     let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
         .arg("--version")
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.12\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.13\n");
 }
 
 #[test]
@@ -391,10 +396,15 @@ fn assert_download_output(out: &Path) {
     let demo = fs::read_to_string(out.join("index.html")).unwrap();
     assert!(demo.contains("maplibregl.Map"));
     assert!(demo.contains("World_Imagery"));
-    assert!(demo.contains("./tiles/{z}/{x}/{y}.jpg"));
+    assert!(demo.contains("./tiles/${tile.z}/${tile.x}/${tile.y}.jpg"));
     assert!(!demo.contains("%7Bz%7D"));
-    assert!(demo.contains("minZoom: data.zoom"));
-    assert!(!demo.contains("fitBounds"));
+    assert!(demo.contains("geodot-labels"));
+    assert!(demo.contains("Jump to tile"));
+    assert!(demo.contains("labelsToggle"));
+    assert!(demo.contains("themeToggle"));
+    assert!(demo.contains("togglePanel"));
+    assert!(demo.contains("minZoom: Math.max(0, data.zoom - 8)"));
+    assert!(demo.contains("fitBounds"));
 
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();

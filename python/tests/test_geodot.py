@@ -128,10 +128,15 @@ def test_download_can_skip_manifest_and_writes_demo(tmp_path: Path, monkeypatch:
     demo = (tmp_path / "index.html").read_text(encoding="utf-8")
     assert "maplibregl.Map" in demo
     assert "World_Imagery" in demo
-    assert "./tiles/{z}/{x}/{y}.jpg" in demo
+    assert "./tiles/${tile.z}/${tile.x}/${tile.y}.jpg" in demo
     assert "%7Bz%7D" not in demo
-    assert "minZoom: data.zoom" in demo
-    assert "fitBounds" not in demo
+    assert "geodot-labels" in demo
+    assert "Jump to tile" in demo
+    assert "labelsToggle" in demo
+    assert "themeToggle" in demo
+    assert "togglePanel" in demo
+    assert "minZoom: Math.max(0, data.zoom - 8)" in demo
+    assert "fitBounds" in demo
 
 
 def test_download_can_skip_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

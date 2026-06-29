@@ -1057,101 +1057,289 @@ def _write_demo(out: Path, report: DownloadReport) -> None:
 
 
 def _demo_html(demo_data: str) -> str:
-    return f"""<!doctype html>
+    html = """<!doctype html>
 <html lang=\"en\">
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>geodot tile overlay demo</title>
-  <link href=\"https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.css\" rel=\"stylesheet\">
+  <link href=\"https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css\" rel=\"stylesheet\">
   <style>
-    html, body, #map {{ height: 100%; margin: 0; }}
-    .panel {{
-      position: absolute; top: 12px; right: 12px; z-index: 1; display: grid; gap: 8px;
-      padding: 10px; border-radius: 10px; background: rgba(255,255,255,.92);
-      font: 13px system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.18);
-    }}
-    .panel button {{
-      border: 0; border-radius: 8px; padding: 8px 10px; background: #1f2937; color: white;
-      cursor: pointer;
-    }}
-    .opacity {{ display: grid; gap: 4px; }}
-    .warning {{ max-width: 260px; color: #92400e; }}
-    .hidden {{ display: none; }}
+    :root {
+      color-scheme: light; --panel-bg: rgba(255,255,255,.94); --panel-border: rgba(17,24,39,.12);
+      --text: #111827; --muted: #6b7280; --button: #111827; --button-text: #fff;
+      --secondary: #e5e7eb; --secondary-text: #111827; --input: #fff; --label: #111827;
+    }
+    body.dark {
+      color-scheme: dark; --panel-bg: rgba(17,24,39,.92); --panel-border: rgba(255,255,255,.16);
+      --text: #f9fafb; --muted: #9ca3af; --button: #f9fafb; --button-text: #111827;
+      --secondary: rgba(255,255,255,.14); --secondary-text: #f9fafb; --input: rgba(17,24,39,.85);
+      --label: #f9fafb;
+    }
+    html, body, #map { height: 100%; margin: 0; }
+    body { font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); }
+    .panel {
+      position: absolute; top: 12px; right: 12px; z-index: 1; display: grid; gap: 12px;
+      width: min(360px, calc(100vw - 24px)); padding: 14px; border: 1px solid var(--panel-border);
+      border-radius: 18px; background: var(--panel-bg); box-shadow: 0 14px 40px rgba(0,0,0,.24);
+      backdrop-filter: blur(12px);
+    }
+    .panel.collapsed { width: auto; }
+    .panel.collapsed .panel-body { display: none; }
+    .panel-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+    .panel-title { display: grid; gap: 3px; }
+    .panel h1 { margin: 0; font-size: 15px; }
+    .panel-body { display: grid; gap: 12px; }
+    .muted { color: var(--muted); }
+    .control { display: grid; gap: 6px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .buttons, .jump { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .jump { grid-template-columns: .8fr 1fr 1fr auto; }
+    .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .check {
+      display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--panel-border);
+      border-radius: 12px; background: color-mix(in srgb, var(--input) 85%, transparent);
+    }
+    button {
+      border: 0; border-radius: 10px; padding: 8px 10px; background: var(--button); color: var(--button-text);
+      font-weight: 650; cursor: pointer;
+    }
+    button.secondary { background: var(--secondary); color: var(--secondary-text); }
+    input {
+      min-width: 0; border: 1px solid #d1d5db; border-radius: 10px; padding: 8px;
+      background: var(--input); color: var(--text); font: inherit;
+    }
+    input[type="checkbox"] { min-width: auto; accent-color: var(--button); }
+    input[type="range"] { padding: 0; accent-color: var(--button); }
+    .warning { max-width: 100%; color: #92400e; }
+    .hidden { display: none; }
+    @media (max-width: 640px) { .panel { left: 12px; right: 12px; bottom: 12px; top: auto; width: auto; } }
   </style>
 </head>
 <body>
   <div id=\"map\"></div>
-  <div class=\"panel\">
-    <button id=\"toggle\" type=\"button\">Overlay opacity</button>
-    <label id=\"opacityPanel\" class=\"opacity hidden\">Transparency
-      <input id=\"opacity\" type=\"range\" min=\"0\" max=\"1\" step=\"0.05\" value=\"0.65\">
-    </label>
-    <div id=\"fileWarning\" class=\"warning hidden\">
-      Local file mode cannot load tile files. Run geodot demo and open http://127.0.0.1:8000/.
+  <div id=\"panel\" class=\"panel\">
+    <div class=\"panel-header\">
+      <div class=\"panel-title\">
+        <h1>geodot tile demo</h1>
+        <div class=\"muted\">Labels show <code>z/x/y</code>. Use <code>#12/2367/1306.jpg</code> to center a tile.</div>
+      </div>
+      <button id=\"togglePanel\" type=\"button\" class=\"secondary\">Hide</button>
+    </div>
+    <div class=\"panel-body\">
+      <div class=\"toggles\">
+        <label class=\"check\"><input id=\"labelsToggle\" type=\"checkbox\" checked> Labels</label>
+        <button id=\"themeToggle\" type=\"button\" class=\"secondary\">Dark theme</button>
+      </div>
+      <div class=\"control\">
+        <div class=\"row\">
+          <label for=\"opacity\">Overlay transparency</label><strong id=\"opacityValue\">65%</strong>
+        </div>
+        <input id=\"opacity\" type=\"range\" min=\"0\" max=\"1\" step=\"0.05\" value=\"0.65\">
+      </div>
+      <div class=\"control\">
+        <div class=\"row\"><span>View zoom</span><span id=\"viewZoom\" class=\"muted\"></span></div>
+        <div class=\"buttons\">
+          <button id=\"zoomOut\" type=\"button\" class=\"secondary\">−</button>
+          <button id=\"fitTiles\" type=\"button\" class=\"secondary\">Fit</button>
+          <button id=\"zoomIn\" type=\"button\" class=\"secondary\">+</button>
+        </div>
+      </div>
+      <form id=\"jumpForm\" class=\"control\">
+        <label>Jump to tile</label>
+        <div class=\"jump\">
+          <input id=\"jumpZ\" type=\"number\" min=\"0\" step=\"1\" aria-label=\"z\" placeholder=\"z\">
+          <input id=\"jumpX\" type=\"number\" min=\"0\" step=\"1\" aria-label=\"x\" placeholder=\"x\">
+          <input id=\"jumpY\" type=\"number\" min=\"0\" step=\"1\" aria-label=\"y\" placeholder=\"y\">
+          <button type=\"submit\">Go</button>
+        </div>
+      </form>
+      <div id=\"fileWarning\" class=\"warning hidden\">
+        Local file mode cannot load tile files. Run geodot demo and open http://127.0.0.1:8000/.
+      </div>
     </div>
   </div>
-  <script src=\"https://unpkg.com/maplibre-gl@5.14.0/dist/maplibre-gl.js\"></script>
+  <script src=\"https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js\"></script>
   <script>
-    const data = {demo_data};
-    if (location.protocol === 'file:') {{
+    const data = __GEODOT_DEMO_DATA__;
+    const opacityInput = document.getElementById('opacity');
+    const opacityValue = document.getElementById('opacityValue');
+    const viewZoom = document.getElementById('viewZoom');
+    const labelsToggle = document.getElementById('labelsToggle');
+    const panel = document.getElementById('panel');
+    if (location.protocol === 'file:') {
       document.getElementById('fileWarning').classList.remove('hidden');
-    }}
-    const map = new maplibregl.Map({{
+    }
+    const map = new maplibregl.Map({
       container: 'map',
-      style: {{
+      style: {
         version: 8,
-        sources: {{
-          satellite: {{
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        sources: {
+          satellite: {
             type: 'raster',
             tiles: [
-              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}'
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
             ],
             tileSize: 256,
             attribution: 'Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
-          }}
-        }},
-        layers: [{{ id: 'satellite', type: 'raster', source: 'satellite' }}]
-      }},
+          }
+        },
+        layers: [{ id: 'satellite', type: 'raster', source: 'satellite' }]
+      },
       center: data.mapCenter,
       zoom: data.zoom,
-      minZoom: data.zoom,
-      maxZoom: data.zoom,
+      minZoom: Math.max(0, data.zoom - 8),
+      maxZoom: data.zoom + 8,
       scrollZoom: false,
       boxZoom: false,
-      doubleClickZoom: false,
-      touchZoomRotate: false,
-      keyboard: false,
+      doubleClickZoom: true,
+      touchZoomRotate: true,
+      keyboard: true,
       dragRotate: false,
       pitchWithRotate: false
-    }});
+    });
 
-    map.on('load', () => {{
-      map.addSource('geodot-tiles', {{
-        type: 'raster',
-        tiles: ['./tiles/{{z}}/{{x}}/{{y}}.jpg'],
-        tileSize: 256,
-        minzoom: data.zoom,
-        maxzoom: data.zoom,
-        bounds: [data.bounds[0][0], data.bounds[0][1], data.bounds[1][0], data.bounds[1][1]]
-      }});
-      map.addLayer({{
-        id: 'geodot-tiles',
-        type: 'raster',
-        source: 'geodot-tiles',
-        paint: {{ 'raster-opacity': 0.65 }}
-      }});
-    }});
+    function tileBounds(tile) {
+      const n = 2 ** tile.z;
+      const lonMin = tile.x / n * 360 - 180;
+      const lonMax = (tile.x + 1) / n * 360 - 180;
+      const latMax = Math.atan(Math.sinh(Math.PI * (1 - 2 * tile.y / n))) * 180 / Math.PI;
+      const latMin = Math.atan(Math.sinh(Math.PI * (1 - 2 * (tile.y + 1) / n))) * 180 / Math.PI;
+      return { lonMin, latMin, lonMax, latMax };
+    }
 
-    document.getElementById('toggle').addEventListener('click', () => {{
-      document.getElementById('opacityPanel').classList.toggle('hidden');
-    }});
-    document.getElementById('opacity').addEventListener('input', (event) => {{
-      if (map.getLayer('geodot-tiles')) {{
-        map.setPaintProperty('geodot-tiles', 'raster-opacity', Number(event.target.value));
-      }}
-    }});
+    function tileCenter(tile) {
+      const bounds = tileBounds(tile);
+      return [(bounds.lonMin + bounds.lonMax) / 2, (bounds.latMin + bounds.latMax) / 2];
+    }
+
+    function tileFromLocation() {
+      const value = location.hash.slice(1) || location.pathname.slice(1);
+      const parts = value.split('/');
+      if (parts.length !== 3) return undefined;
+      const y = parts[2].split('.')[0];
+      if (![parts[0], parts[1], y].every((part) => (
+        part && [...part].every((char) => char >= '0' && char <= '9')
+      ))) return undefined;
+      return { z: Number(parts[0]), x: Number(parts[1]), y: Number(y) };
+    }
+
+    function setOpacity(value) {
+      opacityValue.textContent = `${Math.round(value * 100)}%`;
+      for (const tile of data.tiles) {
+        const layer = `geodot-tile-${tile.z}-${tile.x}-${tile.y}`;
+        if (map.getLayer(layer)) map.setPaintProperty(layer, 'raster-opacity', value);
+      }
+    }
+
+    function updateZoomLabel() {
+      viewZoom.textContent = map.getZoom().toFixed(2);
+      if (map.getLayer('geodot-labels')) {
+        map.setLayoutProperty(
+          'geodot-labels',
+          'text-size',
+          Math.max(10, Math.min(24, 13 + (map.getZoom() - data.zoom) * 2))
+        );
+      }
+    }
+
+    function updateLabelStyle() {
+      if (!map.getLayer('geodot-labels')) return;
+      map.setLayoutProperty('geodot-labels', 'visibility', labelsToggle.checked ? 'visible' : 'none');
+      map.setPaintProperty(
+        'geodot-labels',
+        'text-color',
+        getComputedStyle(document.body).getPropertyValue('--label').trim()
+      );
+    }
+
+    function fillJump(tile) {
+      document.getElementById('jumpZ').value = tile.z;
+      document.getElementById('jumpX').value = tile.x;
+      document.getElementById('jumpY').value = tile.y;
+    }
+
+    function jumpToTile(tile, updateHash = true) {
+      fillJump(tile);
+      map.easeTo({ center: tileCenter(tile), zoom: Math.max(map.getZoom(), tile.z), duration: 450 });
+      if (updateHash) history.replaceState(null, '', `#${tile.z}/${tile.x}/${tile.y}.jpg`);
+    }
+
+    map.on('load', () => {
+      for (const tile of data.tiles) {
+        const bounds = tileBounds(tile);
+        const id = `geodot-tile-${tile.z}-${tile.x}-${tile.y}`;
+        map.addSource(id, {
+          type: 'image',
+          url: `./tiles/${tile.z}/${tile.x}/${tile.y}.jpg`,
+          coordinates: [
+            [bounds.lonMin, bounds.latMax],
+            [bounds.lonMax, bounds.latMax],
+            [bounds.lonMax, bounds.latMin],
+            [bounds.lonMin, bounds.latMin]
+          ]
+        });
+        map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-opacity': Number(opacityInput.value) } });
+      }
+      map.addSource('geodot-labels', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: data.tiles.map((tile) => ({
+            type: 'Feature',
+            properties: { label: `${tile.z}/${tile.x}/${tile.y}` },
+            geometry: { type: 'Point', coordinates: tileCenter(tile) }
+          }))
+        }
+      });
+      map.addLayer({
+        id: 'geodot-labels',
+        type: 'symbol',
+        source: 'geodot-labels',
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-size': 13,
+          'text-font': ['Open Sans Bold'],
+          'text-allow-overlap': true
+        },
+        paint: { 'text-color': '#111827', 'text-halo-width': 0 }
+      });
+      updateLabelStyle();
+      updateZoomLabel();
+      const requestedTile = tileFromLocation();
+      if (requestedTile) jumpToTile(requestedTile, false);
+    });
+
+    opacityInput.addEventListener('input', (event) => setOpacity(Number(event.target.value)));
+    document.getElementById('zoomOut').addEventListener('click', () => map.zoomOut());
+    document.getElementById('zoomIn').addEventListener('click', () => map.zoomIn());
+    document.getElementById('fitTiles').addEventListener('click', () => {
+      map.fitBounds(data.bounds, { padding: 48, duration: 450 });
+    });
+    document.getElementById('togglePanel').addEventListener('click', (event) => {
+      panel.classList.toggle('collapsed');
+      event.target.textContent = panel.classList.contains('collapsed') ? 'Show' : 'Hide';
+    });
+    document.getElementById('themeToggle').addEventListener('click', (event) => {
+      document.body.classList.toggle('dark');
+      event.target.textContent = document.body.classList.contains('dark') ? 'Light theme' : 'Dark theme';
+      updateLabelStyle();
+    });
+    labelsToggle.addEventListener('change', updateLabelStyle);
+    document.getElementById('jumpForm').addEventListener('submit', (event) => {
+      event.preventDefault();
+      jumpToTile({
+        z: Number(document.getElementById('jumpZ').value),
+        x: Number(document.getElementById('jumpX').value),
+        y: Number(document.getElementById('jumpY').value)
+      });
+    });
+    map.on('zoom', updateZoomLabel);
+    updateZoomLabel();
+    if (data.tiles[0]) fillJump(data.tiles[0]);
   </script>
 </body>
 </html>
 """
+    return html.replace("__GEODOT_DEMO_DATA__", demo_data)

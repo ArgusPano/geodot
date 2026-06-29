@@ -226,7 +226,7 @@ data/
 }
 ```
 
-The demo page reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg` and overlays them on a satellite basemap. Zooming is disabled because the output folder only contains the downloaded zoom level. Use the opacity control to compare the downloaded overlay with the basemap.
+The demo page reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg`, overlays them on a satellite basemap, labels each tile as `z/x/y`, and keeps the downloaded imagery georeferenced while you zoom the view in or out. Use the transparency control to compare the downloaded overlay with the basemap, or open `#z/x/y.jpg` / `/z/x/y` URLs to center a specific tile.
 
 ## Dataset Preparation
 
@@ -488,39 +488,3 @@ Approximate resolution near the default latitude (`55.7303`):
 | 14 | 5.45 | 1.4 x 1.4 km |
 | 10 | 86 | 22 x 22 km |
 | 8 | 345 | 88 x 88 km |
-
-## Development
-
-Install local Python test dependencies and run the Python tests:
-
-```bash
-python -m pip install -e '.[test,dev]'
-python -m pytest
-```
-
-Run JavaScript and Rust tests:
-
-```bash
-npm install
-npm test
-cargo test --manifest-path rust/Cargo.toml
-```
-
-Run lint and format checks:
-
-```bash
-python -m pip install -e '.[test,dev]'
-ruff format --check python
-ruff check python
-npm run format:check
-npm run lint
-cargo fmt --manifest-path rust/Cargo.toml -- --check
-cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
-```
-
-Install the local pre-commit hook to run format, lint, and tests before every commit:
-
-```bash
-cp scripts/pre-commit .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-```

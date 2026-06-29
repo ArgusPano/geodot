@@ -221,7 +221,7 @@ data/
 }
 ```
 
-The demo page reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg` and overlays them on a satellite basemap. Zooming is disabled because the output folder only contains the downloaded zoom level. Use the opacity control to compare the downloaded overlay with the basemap.
+The demo page reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg`, overlays them on a satellite basemap, labels each tile as `z/x/y`, and keeps the downloaded imagery georeferenced while you zoom the view in or out. Use the transparency control to compare the downloaded overlay with the basemap, or open `#z/x/y.jpg` / `/z/x/y` URLs to center a specific tile.
 
 ## Dataset Preparation
 

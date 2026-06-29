@@ -29,7 +29,7 @@ from .core import (
     validate_dataset,
 )
 
-__version__ = "0.1.12"
+__version__ = "0.1.13"
 
 __all__ = [
     "__version__",

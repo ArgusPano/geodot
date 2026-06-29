@@ -470,7 +470,7 @@ fn serve_demo(args: DemoArgs) -> Result<()> {
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("/");
         let path = percent_decode(path.split('?').next().unwrap_or("/"));
-        let relative = if path == "/" {
+        let relative = if path == "/" || is_tile_route(&path) {
             "index.html"
         } else {
             path.trim_start_matches('/')
@@ -498,6 +498,21 @@ fn serve_demo(args: DemoArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_tile_route(path: &str) -> bool {
+    let mut parts = path.trim_start_matches('/').split('/');
+    let Some(z) = parts.next() else { return false };
+    let Some(x) = parts.next() else { return false };
+    let Some(y) = parts.next() else { return false };
+    if parts.next().is_some() {
+        return false;
+    }
+    z.parse::<u32>().is_ok()
+        && x.parse::<u32>().is_ok()
+        && y.split('.')
+            .next()
+            .is_some_and(|value| value.parse::<u32>().is_ok())
 }
 
 fn write_response(

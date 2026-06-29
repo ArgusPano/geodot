@@ -126,10 +126,18 @@ test("download manifest includes per-tile bounds", async () => {
     ]);
     assert.match(demo, /maplibregl\.Map/);
     assert.match(demo, /World_Imagery/);
-    assert.match(demo, /\.\/tiles\/\{z\}\/\{x\}\/\{y\}\.jpg/);
+    assert.match(
+      demo,
+      /\.\/tiles\/\$\{tile\.z\}\/\$\{tile\.x\}\/\$\{tile\.y\}\.jpg/,
+    );
     assert.doesNotMatch(demo, /%7Bz%7D/);
-    assert.match(demo, /minZoom: data\.zoom/);
-    assert.doesNotMatch(demo, /fitBounds/);
+    assert.match(demo, /geodot-labels/);
+    assert.match(demo, /Jump to tile/);
+    assert.match(demo, /labelsToggle/);
+    assert.match(demo, /themeToggle/);
+    assert.match(demo, /togglePanel/);
+    assert.match(demo, /minZoom: Math\.max\(0, data\.zoom - 8\)/);
+    assert.match(demo, /fitBounds/);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(out, { recursive: true, force: true });

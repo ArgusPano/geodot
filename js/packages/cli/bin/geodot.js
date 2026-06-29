@@ -41,7 +41,7 @@ const defaults = {
   rotations: undefined,
 };
 
-const VERSION = "0.1.12";
+const VERSION = "0.1.13";
 
 const flags = {
   "-y": "lat",
@@ -321,7 +321,10 @@ function serveDemo(options) {
       `http://${options.host}:${options.port}`,
     );
     const decoded = decodeURIComponent(url.pathname);
-    const requested = decoded === "/" ? "/index.html" : decoded;
+    const requested =
+      decoded === "/" || /^\/\d+\/\d+\/\d+(?:\.[A-Za-z0-9]+)?$/.test(decoded)
+        ? "/index.html"
+        : decoded;
     const file = path.resolve(root, `.${requested}`);
     if (!file.startsWith(`${root}${path.sep}`) && file !== root) {
       response.writeHead(403);

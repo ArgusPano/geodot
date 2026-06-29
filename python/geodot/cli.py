@@ -5,6 +5,7 @@ import base64
 import io
 import math
 import os
+import re
 import sys
 import time
 import webbrowser
@@ -255,6 +256,8 @@ def _demo(argv: list[str]) -> None:
             super().__init__(*handler_args, directory=args.out, **kwargs)
 
         def send_head(self):
+            if re.fullmatch(r"/\d+/\d+/\d+(?:\.[A-Za-z0-9]+)?", self.path.split("?", 1)[0]):
+                self.path = "/index.html"
             path = self.translate_path(self.path)
             if not os.path.exists(path) and "/tiles/" in self.path and self.path.endswith(".jpg"):
                 self.send_response(200)
