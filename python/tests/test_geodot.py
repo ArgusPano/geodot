@@ -131,10 +131,13 @@ def test_download_can_skip_manifest_and_writes_demo(tmp_path: Path, monkeypatch:
     assert "./tiles/${tile.z}/${tile.x}/${tile.y}.jpg" in demo
     assert "%7Bz%7D" not in demo
     assert "geodot-labels" in demo
+    assert "geodot-borders" in demo
     assert "Jump to tile" in demo
     assert "labelsToggle" in demo
     assert "themeToggle" in demo
     assert "togglePanel" in demo
+    assert "maxActiveTiles" in demo
+    assert "syncVisibleTiles" in demo
     assert "minZoom: Math.max(0, data.zoom - 8)" in demo
     assert "fitBounds" in demo
 

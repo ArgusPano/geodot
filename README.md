@@ -221,7 +221,7 @@ data/
 }
 ```
 
-The demo page reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg`, overlays them on a satellite basemap, labels each tile as `z/x/y`, and keeps the downloaded imagery georeferenced while you zoom the view in or out. Use the transparency control to compare the downloaded overlay with the basemap, or open `#z/x/y.jpg` / `/z/x/y` URLs to center a specific tile.
+The demo page reads tiles from `{out}/tiles/{z}/{x}/{y}.jpg`, overlays them on a satellite basemap, labels each tile as `z/x/y`, and keeps the downloaded imagery georeferenced while you zoom the view in or out. Large outputs are loaded lazily: the demo only mounts overlay images near the current viewport, so panning and zooming may update the displayed tile count in the panel. Use the transparency control to compare the downloaded overlay with the basemap, or open `#z/x/y.jpg` / `/z/x/y` URLs to center a specific tile.
 
 ## Dataset Preparation
 

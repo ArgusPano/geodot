@@ -41,7 +41,7 @@ const defaults = {
   rotations: undefined,
 };
 
-const VERSION = "0.1.13";
+const VERSION = "0.1.14";
 
 const flags = {
   "-y": "lat",

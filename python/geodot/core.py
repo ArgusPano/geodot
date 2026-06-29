@@ -1069,12 +1069,13 @@ def _demo_html(demo_data: str) -> str:
       color-scheme: light; --panel-bg: rgba(255,255,255,.94); --panel-border: rgba(17,24,39,.12);
       --text: #111827; --muted: #6b7280; --button: #111827; --button-text: #fff;
       --secondary: #e5e7eb; --secondary-text: #111827; --input: #fff; --label: #111827;
+      --tile-border: rgba(17,24,39,.72);
     }
     body.dark {
       color-scheme: dark; --panel-bg: rgba(17,24,39,.92); --panel-border: rgba(255,255,255,.16);
       --text: #f9fafb; --muted: #9ca3af; --button: #f9fafb; --button-text: #111827;
       --secondary: rgba(255,255,255,.14); --secondary-text: #f9fafb; --input: rgba(17,24,39,.85);
-      --label: #f9fafb;
+      --label: #f9fafb; --tile-border: rgba(249,250,251,.72);
     }
     html, body, #map { height: 100%; margin: 0; }
     body { font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); }
@@ -1139,6 +1140,7 @@ def _demo_html(demo_data: str) -> str:
       </div>
       <div class=\"control\">
         <div class=\"row\"><span>View zoom</span><span id=\"viewZoom\" class=\"muted\"></span></div>
+        <div id=\"tileStatus\" class=\"muted\"></div>
         <div class=\"buttons\">
           <button id=\"zoomOut\" type=\"button\" class=\"secondary\">−</button>
           <button id=\"fitTiles\" type=\"button\" class=\"secondary\">Fit</button>
@@ -1165,8 +1167,13 @@ def _demo_html(demo_data: str) -> str:
     const opacityInput = document.getElementById('opacity');
     const opacityValue = document.getElementById('opacityValue');
     const viewZoom = document.getElementById('viewZoom');
+    const tileStatus = document.getElementById('tileStatus');
     const labelsToggle = document.getElementById('labelsToggle');
     const panel = document.getElementById('panel');
+    const maxActiveTiles = 420;
+    const tileLookup = new Map(data.tiles.map((tile) => [tileKey(tile), tile]));
+    const tileZooms = [...new Set(data.tiles.map((tile) => tile.z))];
+    const activeTileKeys = new Set();
     if (location.protocol === 'file:') {
       document.getElementById('fileWarning').classList.remove('hidden');
     }
@@ -1214,6 +1221,17 @@ def _demo_html(demo_data: str) -> str:
       return [(bounds.lonMin + bounds.lonMax) / 2, (bounds.latMin + bounds.latMax) / 2];
     }
 
+    function tileBorder(tile) {
+      const bounds = tileBounds(tile);
+      return [
+        [bounds.lonMin, bounds.latMax],
+        [bounds.lonMax, bounds.latMax],
+        [bounds.lonMax, bounds.latMin],
+        [bounds.lonMin, bounds.latMin],
+        [bounds.lonMin, bounds.latMax]
+      ];
+    }
+
     function tileFromLocation() {
       const value = location.hash.slice(1) || location.pathname.slice(1);
       const parts = value.split('/');
@@ -1225,10 +1243,28 @@ def _demo_html(demo_data: str) -> str:
       return { z: Number(parts[0]), x: Number(parts[1]), y: Number(y) };
     }
 
+    function tileKey(tile) {
+      return `${tile.z}-${tile.x}-${tile.y}`;
+    }
+
+    function tileId(key) {
+      return `geodot-tile-${key}`;
+    }
+
+    function lonToTileX(lon, z) {
+      return Math.floor(((lon + 180) / 360) * 2 ** z);
+    }
+
+    function latToTileY(lat, z) {
+      const clamped = Math.max(-85.05112878, Math.min(85.05112878, lat));
+      const latRad = clamped * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * 2 ** z);
+    }
+
     function setOpacity(value) {
       opacityValue.textContent = `${Math.round(value * 100)}%`;
-      for (const tile of data.tiles) {
-        const layer = `geodot-tile-${tile.z}-${tile.x}-${tile.y}`;
+      for (const key of activeTileKeys) {
+        const layer = tileId(key);
         if (map.getLayer(layer)) map.setPaintProperty(layer, 'raster-opacity', value);
       }
     }
@@ -1245,13 +1281,88 @@ def _demo_html(demo_data: str) -> str:
     }
 
     function updateLabelStyle() {
-      if (!map.getLayer('geodot-labels')) return;
-      map.setLayoutProperty('geodot-labels', 'visibility', labelsToggle.checked ? 'visible' : 'none');
-      map.setPaintProperty(
-        'geodot-labels',
-        'text-color',
-        getComputedStyle(document.body).getPropertyValue('--label').trim()
+      const visibility = labelsToggle.checked ? 'visible' : 'none';
+      const styles = getComputedStyle(document.body);
+      if (map.getLayer('geodot-labels')) {
+        map.setLayoutProperty('geodot-labels', 'visibility', visibility);
+        map.setPaintProperty('geodot-labels', 'text-color', styles.getPropertyValue('--label').trim());
+      }
+      if (map.getLayer('geodot-borders')) {
+        map.setLayoutProperty('geodot-borders', 'visibility', visibility);
+        map.setPaintProperty('geodot-borders', 'line-color', styles.getPropertyValue('--tile-border').trim());
+      }
+    }
+
+    function visibleTileKeys() {
+      const bounds = map.getBounds();
+      const center = map.getCenter();
+      const keys = [];
+      for (const z of tileZooms) {
+        const maxTile = 2 ** z - 1;
+        const xMin = Math.max(0, lonToTileX(bounds.getWest(), z) - 1);
+        const xMax = Math.min(maxTile, lonToTileX(bounds.getEast(), z) + 1);
+        const yMin = Math.max(0, latToTileY(bounds.getNorth(), z) - 1);
+        const yMax = Math.min(maxTile, latToTileY(bounds.getSouth(), z) + 1);
+        const centerX = lonToTileX(center.lng, z);
+        const centerY = latToTileY(center.lat, z);
+        for (let x = xMin; x <= xMax; x += 1) {
+          for (let y = yMin; y <= yMax; y += 1) {
+            const key = `${z}-${x}-${y}`;
+            if (tileLookup.has(key)) keys.push({ key, distance: Math.abs(x - centerX) + Math.abs(y - centerY) });
+          }
+        }
+      }
+      keys.sort((a, b) => a.distance - b.distance || a.key.localeCompare(b.key));
+      return keys.slice(0, maxActiveTiles).map((item) => item.key);
+    }
+
+    function addTileLayer(key) {
+      const tile = tileLookup.get(key);
+      if (!tile || map.getLayer(tileId(key))) return;
+      const bounds = tileBounds(tile);
+      map.addSource(tileId(key), {
+        type: 'image',
+        url: `./tiles/${tile.z}/${tile.x}/${tile.y}.jpg`,
+        coordinates: [
+          [bounds.lonMin, bounds.latMax],
+          [bounds.lonMax, bounds.latMax],
+          [bounds.lonMax, bounds.latMin],
+          [bounds.lonMin, bounds.latMin]
+        ]
+      });
+      map.addLayer(
+        {
+          id: tileId(key),
+          type: 'raster',
+          source: tileId(key),
+          paint: { 'raster-opacity': Number(opacityInput.value) }
+        },
+        map.getLayer('geodot-labels') ? 'geodot-labels' : undefined
       );
+    }
+
+    function removeTileLayer(key) {
+      if (map.getLayer(tileId(key))) map.removeLayer(tileId(key));
+      if (map.getSource(tileId(key))) map.removeSource(tileId(key));
+    }
+
+    function syncVisibleTiles() {
+      if (!map.loaded()) return;
+      const nextKeys = new Set(visibleTileKeys());
+      for (const key of activeTileKeys) {
+        if (!nextKeys.has(key)) {
+          removeTileLayer(key);
+          activeTileKeys.delete(key);
+        }
+      }
+      for (const key of nextKeys) {
+        if (!activeTileKeys.has(key)) {
+          addTileLayer(key);
+          activeTileKeys.add(key);
+        }
+      }
+      const capped = nextKeys.size === maxActiveTiles ? '+' : '';
+      tileStatus.textContent = `Showing ${activeTileKeys.size}${capped} of ${data.tiles.length} overlay tiles`;
     }
 
     function fillJump(tile) {
@@ -1267,21 +1378,23 @@ def _demo_html(demo_data: str) -> str:
     }
 
     map.on('load', () => {
-      for (const tile of data.tiles) {
-        const bounds = tileBounds(tile);
-        const id = `geodot-tile-${tile.z}-${tile.x}-${tile.y}`;
-        map.addSource(id, {
-          type: 'image',
-          url: `./tiles/${tile.z}/${tile.x}/${tile.y}.jpg`,
-          coordinates: [
-            [bounds.lonMin, bounds.latMax],
-            [bounds.lonMax, bounds.latMax],
-            [bounds.lonMax, bounds.latMin],
-            [bounds.lonMin, bounds.latMin]
-          ]
-        });
-        map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-opacity': Number(opacityInput.value) } });
-      }
+      map.addSource('geodot-borders', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: data.tiles.map((tile) => ({
+            type: 'Feature',
+            properties: {},
+            geometry: { type: 'LineString', coordinates: tileBorder(tile) }
+          }))
+        }
+      });
+      map.addLayer({
+        id: 'geodot-borders',
+        type: 'line',
+        source: 'geodot-borders',
+        paint: { 'line-color': '#111827', 'line-width': 1, 'line-opacity': 0.85 }
+      });
       map.addSource('geodot-labels', {
         type: 'geojson',
         data: {
@@ -1307,6 +1420,7 @@ def _demo_html(demo_data: str) -> str:
       });
       updateLabelStyle();
       updateZoomLabel();
+      syncVisibleTiles();
       const requestedTile = tileFromLocation();
       if (requestedTile) jumpToTile(requestedTile, false);
     });
@@ -1335,6 +1449,8 @@ def _demo_html(demo_data: str) -> str:
         y: Number(document.getElementById('jumpY').value)
       });
     });
+    map.on('moveend', syncVisibleTiles);
+    map.on('zoomend', syncVisibleTiles);
     map.on('zoom', updateZoomLabel);
     updateZoomLabel();
     if (data.tiles[0]) fillJump(data.tiles[0]);

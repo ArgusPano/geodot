@@ -241,10 +241,13 @@ fn cli_can_skip_manifest_and_still_write_demo() {
     assert!(demo.contains("./tiles/${tile.z}/${tile.x}/${tile.y}.jpg"));
     assert!(!demo.contains("%7Bz%7D"));
     assert!(demo.contains("geodot-labels"));
+    assert!(demo.contains("geodot-borders"));
     assert!(demo.contains("Jump to tile"));
     assert!(demo.contains("labelsToggle"));
     assert!(demo.contains("themeToggle"));
     assert!(demo.contains("togglePanel"));
+    assert!(demo.contains("maxActiveTiles"));
+    assert!(demo.contains("syncVisibleTiles"));
     assert!(demo.contains("minZoom: Math.max(0, data.zoom - 8)"));
     assert!(demo.contains("fitBounds"));
 
@@ -323,14 +326,14 @@ fn cli_exposes_top_level_help_and_version() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.13\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.14\n");
 
     let output = Command::new(env!("CARGO_BIN_EXE_geodot"))
         .arg("--version")
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.13\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "0.1.14\n");
 }
 
 #[test]
@@ -399,10 +402,13 @@ fn assert_download_output(out: &Path) {
     assert!(demo.contains("./tiles/${tile.z}/${tile.x}/${tile.y}.jpg"));
     assert!(!demo.contains("%7Bz%7D"));
     assert!(demo.contains("geodot-labels"));
+    assert!(demo.contains("geodot-borders"));
     assert!(demo.contains("Jump to tile"));
     assert!(demo.contains("labelsToggle"));
     assert!(demo.contains("themeToggle"));
     assert!(demo.contains("togglePanel"));
+    assert!(demo.contains("maxActiveTiles"));
+    assert!(demo.contains("syncVisibleTiles"));
     assert!(demo.contains("minZoom: Math.max(0, data.zoom - 8)"));
     assert!(demo.contains("fitBounds"));
 

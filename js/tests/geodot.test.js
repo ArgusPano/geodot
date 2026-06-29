@@ -132,10 +132,13 @@ test("download manifest includes per-tile bounds", async () => {
     );
     assert.doesNotMatch(demo, /%7Bz%7D/);
     assert.match(demo, /geodot-labels/);
+    assert.match(demo, /geodot-borders/);
     assert.match(demo, /Jump to tile/);
     assert.match(demo, /labelsToggle/);
     assert.match(demo, /themeToggle/);
     assert.match(demo, /togglePanel/);
+    assert.match(demo, /maxActiveTiles/);
+    assert.match(demo, /syncVisibleTiles/);
     assert.match(demo, /minZoom: Math\.max\(0, data\.zoom - 8\)/);
     assert.match(demo, /fitBounds/);
   } finally {
